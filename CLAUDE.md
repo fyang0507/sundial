@@ -1,0 +1,45 @@
+# Sundial
+
+Agent-first CLI scheduler with cron and solar triggers. Go project targeting macOS.
+
+## Build & Run
+
+```bash
+go build -o sundial .        # build binary
+go test ./...                 # run all tests
+go vet ./...                  # static analysis
+```
+
+## Architecture
+
+Single binary, dual mode: CLI client + daemon (via `sundial daemon`).
+Daemon managed by macOS launchd. CLI ↔ daemon IPC over Unix domain socket (JSON-RPC).
+
+### Package Map
+
+```
+main.go              → cmd.Execute()
+cmd/                 → cobra commands (thin wiring layer)
+internal/
+  model/             → all shared types, interfaces, errors (zero deps — everything imports this)
+  trigger/           → CronTrigger + SolarTrigger implementing model.Trigger
+  config/            → config.yaml loading, validation, path expansion
+  store/             → file I/O: desired state (data repo), runtime state, run logs (local)
+  gitops/            → git precondition checks, commit --only, push
+  geocode/           → Nominatim geocoding + timezone from coordinates
+  ipc/               → JSON-RPC protocol, Unix socket client + server
+  daemon/            → daemon lifecycle, scheduler run loop, reconciliation, execution, RPC handlers
+  launchd/           → plist generation, launchd install/uninstall
+  format/            → output formatting (plain text + JSON)
+```
+
+### Key Design Decisions
+
+- **model/ is the contract layer**: all shared types live here. Downstream packages import model, never each other's types.
+- **Single-writer architecture**: daemon owns all schedule state mutation. CLI sends RPCs only.
+- **Two-store state model**: desired state in data repo (git-tracked), runtime state local.
+- **Agent-first CLI**: non-interactive, --json flag, fail-fast with examples, --dry-run.
+
+## Design Doc
+
+Full engineering design: `docs/engineering-design.md`
