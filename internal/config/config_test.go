@@ -1,0 +1,251 @@
+package config
+
+import (
+	"errors"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/fyang0507/sundial/internal/model"
+)
+
+// writeConfig writes a YAML string to path/config.yaml and returns the full path.
+func writeConfig(t *testing.T, dir, content string) string {
+	t.Helper()
+	p := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+		t.Fatalf("writing config: %v", err)
+	}
+	return p
+}
+
+// makeGitRepo creates a directory with a .git subdirectory, simulating a repo.
+func makeGitRepo(t *testing.T, dir string) string {
+	t.Helper()
+	repo := filepath.Join(dir, "data-repo")
+	if err := os.MkdirAll(filepath.Join(repo, ".git"), 0o755); err != nil {
+		t.Fatalf("creating git repo: %v", err)
+	}
+	return repo
+}
+
+func TestLoad_AllFieldsSet(t *testing.T) {
+	tmp := t.TempDir()
+	repo := makeGitRepo(t, tmp)
+
+	yaml := `data_repo: ` + repo + `
+daemon:
+  socket_path: /tmp/test.sock
+  log_level: debug
+  log_file: /tmp/test.log
+state:
+  path: /tmp/state/
+  logs_path: /tmp/logs/
+`
+	cfgPath := writeConfig(t, tmp, yaml)
+
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	if cfg.DataRepo != repo {
+		t.Errorf("DataRepo = %q, want %q", cfg.DataRepo, repo)
+	}
+	if cfg.Daemon.SocketPath != "/tmp/test.sock" {
+		t.Errorf("SocketPath = %q, want /tmp/test.sock", cfg.Daemon.SocketPath)
+	}
+	if cfg.Daemon.LogLevel != "debug" {
+		t.Errorf("LogLevel = %q, want debug", cfg.Daemon.LogLevel)
+	}
+	if cfg.Daemon.LogFile != "/tmp/test.log" {
+		t.Errorf("LogFile = %q, want /tmp/test.log", cfg.Daemon.LogFile)
+	}
+	if cfg.State.Path != "/tmp/state/" {
+		t.Errorf("State.Path = %q, want /tmp/state/", cfg.State.Path)
+	}
+	if cfg.State.LogsPath != "/tmp/logs/" {
+		t.Errorf("State.LogsPath = %q, want /tmp/logs/", cfg.State.LogsPath)
+	}
+}
+
+func TestLoad_MinimalConfig_DefaultsApplied(t *testing.T) {
+	tmp := t.TempDir()
+	repo := makeGitRepo(t, tmp)
+
+	yaml := `data_repo: ` + repo + "\n"
+	cfgPath := writeConfig(t, tmp, yaml)
+
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	if cfg.DataRepo != repo {
+		t.Errorf("DataRepo = %q, want %q", cfg.DataRepo, repo)
+	}
+
+	// Defaults should be applied and ~ expanded.
+	home, _ := os.UserHomeDir()
+
+	wantSocket := filepath.Join(home, "Library/Application Support/sundial/sundial.sock")
+	if cfg.Daemon.SocketPath != wantSocket {
+		t.Errorf("SocketPath = %q, want %q", cfg.Daemon.SocketPath, wantSocket)
+	}
+	if cfg.Daemon.LogLevel != "info" {
+		t.Errorf("LogLevel = %q, want info", cfg.Daemon.LogLevel)
+	}
+	wantLogFile := filepath.Join(home, "Library/Logs/sundial/sundial.log")
+	if cfg.Daemon.LogFile != wantLogFile {
+		t.Errorf("LogFile = %q, want %q", cfg.Daemon.LogFile, wantLogFile)
+	}
+	wantState := filepath.Join(home, ".config/sundial/state")
+	if cfg.State.Path != wantState {
+		t.Errorf("State.Path = %q, want %q", cfg.State.Path, wantState)
+	}
+	wantLogs := filepath.Join(home, ".config/sundial/logs")
+	if cfg.State.LogsPath != wantLogs {
+		t.Errorf("State.LogsPath = %q, want %q", cfg.State.LogsPath, wantLogs)
+	}
+}
+
+func TestValidate_MissingDataRepo(t *testing.T) {
+	cfg := &model.Config{}
+	err := Validate(cfg)
+	if err == nil {
+		t.Fatal("expected error for missing data_repo")
+	}
+	if !errors.Is(err, model.ErrConfigInvalid) {
+		t.Errorf("error = %v, want wrapped ErrConfigInvalid", err)
+	}
+}
+
+func TestValidate_NonexistentPath(t *testing.T) {
+	cfg := &model.Config{DataRepo: "/nonexistent/path/that/does/not/exist"}
+	err := Validate(cfg)
+	if err == nil {
+		t.Fatal("expected error for nonexistent data_repo")
+	}
+	if !errors.Is(err, model.ErrDataRepoInvalid) {
+		t.Errorf("error = %v, want wrapped ErrDataRepoInvalid", err)
+	}
+}
+
+func TestValidate_PathExistsButNoGit(t *testing.T) {
+	tmp := t.TempDir()
+	// Directory exists but has no .git
+	cfg := &model.Config{DataRepo: tmp}
+	err := Validate(cfg)
+	if err == nil {
+		t.Fatal("expected error for missing .git directory")
+	}
+	if !errors.Is(err, model.ErrDataRepoInvalid) {
+		t.Errorf("error = %v, want wrapped ErrDataRepoInvalid", err)
+	}
+}
+
+func TestValidate_InvalidLogLevel(t *testing.T) {
+	tmp := t.TempDir()
+	repo := makeGitRepo(t, tmp)
+
+	cfg := &model.Config{
+		DataRepo: repo,
+		Daemon:   model.DaemonConfig{LogLevel: "verbose"},
+	}
+	err := Validate(cfg)
+	if err == nil {
+		t.Fatal("expected error for invalid log_level")
+	}
+	if !errors.Is(err, model.ErrConfigInvalid) {
+		t.Errorf("error = %v, want wrapped ErrConfigInvalid", err)
+	}
+}
+
+func TestValidate_ValidConfig(t *testing.T) {
+	tmp := t.TempDir()
+	repo := makeGitRepo(t, tmp)
+
+	cfg := &model.Config{
+		DataRepo: repo,
+		Daemon:   model.DaemonConfig{LogLevel: "warn"},
+	}
+	if err := Validate(cfg); err != nil {
+		t.Errorf("Validate() unexpected error: %v", err)
+	}
+}
+
+func TestExpandPath(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("UserHomeDir: %v", err)
+	}
+
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "tilde prefix",
+			in:   "~/foo",
+			want: filepath.Join(home, "foo"),
+		},
+		{
+			name: "absolute path unchanged",
+			in:   "/absolute/path",
+			want: "/absolute/path",
+		},
+		{
+			name: "empty string",
+			in:   "",
+			want: "",
+		},
+		{
+			name: "bare tilde",
+			in:   "~",
+			want: home,
+		},
+		{
+			name: "no tilde prefix",
+			in:   "relative/path",
+			want: "relative/path",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ExpandPath(tt.in)
+			if got != tt.want {
+				t.Errorf("ExpandPath(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFindConfigPath_EnvVar(t *testing.T) {
+	tmp := t.TempDir()
+	cfgFile := filepath.Join(tmp, "custom-config.yaml")
+	if err := os.WriteFile(cfgFile, []byte("data_repo: /tmp\n"), 0o644); err != nil {
+		t.Fatalf("writing config: %v", err)
+	}
+
+	t.Setenv("SUNDIAL_CONFIG", cfgFile)
+
+	got, err := FindConfigPath()
+	if err != nil {
+		t.Fatalf("FindConfigPath() error: %v", err)
+	}
+	if got != cfgFile {
+		t.Errorf("FindConfigPath() = %q, want %q", got, cfgFile)
+	}
+}
+
+func TestFindConfigPath_NotFound(t *testing.T) {
+	// Clear env var so it doesn't interfere.
+	t.Setenv("SUNDIAL_CONFIG", "")
+
+	_, err := FindConfigPath()
+	if !errors.Is(err, model.ErrConfigNotFound) {
+		t.Errorf("FindConfigPath() error = %v, want ErrConfigNotFound", err)
+	}
+}
