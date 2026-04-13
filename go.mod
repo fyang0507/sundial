@@ -2,7 +2,11 @@ module github.com/fyang0507/sundial
 
 go 1.26.2
 
-require github.com/spf13/cobra v1.10.2
+require (
+	github.com/nathan-osman/go-sunrise v1.1.0
+	github.com/robfig/cron/v3 v3.0.1
+	github.com/spf13/cobra v1.10.2
+)
 
 require (
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
