@@ -79,6 +79,7 @@ type RemoveResult struct {
 	ID        string `json:"id,omitempty"`
 	Removed   int    `json:"removed"` // count of schedules removed (for --all)
 	Committed string `json:"committed,omitempty"`
+	Warning   string `json:"warning,omitempty"`
 }
 
 // ListParams are the parameters for the "list" RPC method.

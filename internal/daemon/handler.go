@@ -277,7 +277,10 @@ func (d *Daemon) handleRemove(p model.RemoveParams) (*model.RemoveResult, *model
 		filePath := d.desiredStore.FilePath(id)
 		commitMsg := fmt.Sprintf("sundial: remove schedule %s (%s)", id, sched.desired.Name)
 		if err := d.gitOps.CommitSchedule(filePath, commitMsg); err != nil {
-			log.Printf("WARN: schedule %s: git commit failed: %v", id, err)
+			return nil, &model.RPCError{
+				Code:    model.RPCErrCodeGitPrecondition,
+				Message: "git commit failed: " + err.Error(),
+			}
 		}
 		lastCommitMsg = commitMsg
 
@@ -297,15 +300,18 @@ func (d *Daemon) handleRemove(p model.RemoveParams) (*model.RemoveResult, *model
 	d.signalWake()
 
 	// Git push (best-effort).
+	var warning string
 	if removed > 0 {
 		if err := d.gitOps.Push(); err != nil {
 			log.Printf("WARN: git push failed after remove: %v", err)
+			warning = "git push failed: " + err.Error()
 		}
 	}
 
 	result := &model.RemoveResult{
 		Removed:   removed,
 		Committed: lastCommitMsg,
+		Warning:   warning,
 	}
 	if !p.All && len(toRemove) == 1 {
 		result.ID = toRemove[0]

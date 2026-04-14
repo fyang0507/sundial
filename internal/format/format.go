@@ -41,10 +41,16 @@ func FormatRemoveResult(r *model.RemoveResult, jsonMode bool) string {
 	if jsonMode {
 		return mustMarshal(r)
 	}
+	var b strings.Builder
 	if r.Removed > 1 {
-		return fmt.Sprintf("removed: %d schedules", r.Removed)
+		kv(&b, "removed", fmt.Sprintf("%d schedules", r.Removed))
+	} else {
+		kv(&b, "removed", r.ID)
 	}
-	return fmt.Sprintf("removed: %s", r.ID)
+	if r.Warning != "" {
+		kv(&b, "warning", r.Warning)
+	}
+	return strings.TrimRight(b.String(), "\n")
 }
 
 // FormatListResult formats a ListResult as a tabular table for plain text or
