@@ -1,0 +1,555 @@
+package daemon
+
+import (
+	"encoding/json"
+	"fmt"
+	"log"
+	"os"
+	"path/filepath"
+	"time"
+
+	"github.com/fyang0507/sundial/internal/config"
+	"github.com/fyang0507/sundial/internal/model"
+	"github.com/fyang0507/sundial/internal/trigger"
+)
+
+// Handle dispatches an RPC request to the appropriate handler method.
+// It implements the ipc.Handler interface.
+func (d *Daemon) Handle(method string, params json.RawMessage) (interface{}, *model.RPCError) {
+	switch method {
+	case model.MethodAdd:
+		var p model.AddParams
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, &model.RPCError{
+				Code:    model.RPCErrCodeInvalidParams,
+				Message: "invalid add params: " + err.Error(),
+			}
+		}
+		return d.handleAdd(p)
+
+	case model.MethodRemove:
+		var p model.RemoveParams
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, &model.RPCError{
+				Code:    model.RPCErrCodeInvalidParams,
+				Message: "invalid remove params: " + err.Error(),
+			}
+		}
+		return d.handleRemove(p)
+
+	case model.MethodList:
+		return d.handleList()
+
+	case model.MethodShow:
+		var p model.ShowParams
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, &model.RPCError{
+				Code:    model.RPCErrCodeInvalidParams,
+				Message: "invalid show params: " + err.Error(),
+			}
+		}
+		return d.handleShow(p)
+
+	case model.MethodReload:
+		return d.handleReload()
+
+	case model.MethodHealth:
+		return d.handleHealth()
+
+	default:
+		return nil, &model.RPCError{
+			Code:    model.RPCErrCodeMethodNotFound,
+			Message: fmt.Sprintf("unknown method %q", method),
+		}
+	}
+}
+
+// handleAdd creates a new schedule.
+func (d *Daemon) handleAdd(p model.AddParams) (*model.AddResult, *model.RPCError) {
+	// 1. Build TriggerConfig from params.
+	trigCfg := model.TriggerConfig{
+		Type:   p.Type,
+		Cron:   p.Cron,
+		Event:  p.Event,
+		Offset: p.Offset,
+		Days:   p.Days,
+	}
+	if p.Lat != nil && p.Lon != nil {
+		tz := p.Timezone
+		if tz == "" {
+			tz = "UTC"
+		}
+		trigCfg.Location = &model.Location{
+			Lat:      *p.Lat,
+			Lon:      *p.Lon,
+			Timezone: tz,
+		}
+	}
+
+	// 2. Parse and validate trigger.
+	trig, err := trigger.ParseTrigger(trigCfg)
+	if err != nil {
+		return nil, &model.RPCError{
+			Code:    model.RPCErrCodeInvalidParams,
+			Message: "invalid trigger: " + err.Error(),
+		}
+	}
+
+	// 3. Check duplicates.
+	d.mu.RLock()
+	for _, sched := range d.schedules {
+		if !p.Force {
+			var dupInfo *model.DuplicateInfo
+			if p.Name != "" && sched.desired.Name == p.Name {
+				dupInfo = &model.DuplicateInfo{
+					ExistingID:   sched.desired.ID,
+					ExistingName: sched.desired.Name,
+					MatchType:    "exact_name",
+				}
+			} else if sched.desired.Command == p.Command {
+				dupInfo = &model.DuplicateInfo{
+					ExistingID:   sched.desired.ID,
+					ExistingName: sched.desired.Name,
+					MatchType:    "exact_command",
+				}
+			}
+			if dupInfo != nil {
+				d.mu.RUnlock()
+				data, _ := json.Marshal(dupInfo)
+				return nil, &model.RPCError{
+					Code:    model.RPCErrCodeDuplicate,
+					Message: fmt.Sprintf("duplicate schedule: %s match with %s", dupInfo.MatchType, dupInfo.ExistingID),
+					Data:    data,
+				}
+			}
+		}
+	}
+	d.mu.RUnlock()
+
+	// 4. Check git preconditions.
+	if err := d.gitOps.CheckRepoPreconditions(); err != nil {
+		return nil, &model.RPCError{
+			Code:    model.RPCErrCodeGitPrecondition,
+			Message: err.Error(),
+		}
+	}
+
+	// 5. Generate ID, build DesiredState, write to store.
+	id := model.NewScheduleID()
+	name := p.Name
+	if name == "" {
+		name = id
+	}
+
+	desired := &model.DesiredState{
+		ID:          id,
+		Name:        name,
+		CreatedAt:   time.Now(),
+		UserRequest: p.UserRequest,
+		Trigger:     trigCfg,
+		Command:     p.Command,
+		Status:      model.StatusActive,
+	}
+
+	filePath := d.desiredStore.FilePath(id)
+	relPath, _ := filepath.Rel(d.cfg.DataRepo, filePath)
+
+	// Check file preconditions (file doesn't exist yet, so check won't fail on the
+	// new file, but we ensure no stale version exists).
+	if err := d.desiredStore.Write(desired); err != nil {
+		return nil, &model.RPCError{
+			Code:    model.RPCErrCodeInternal,
+			Message: "failed to write desired state: " + err.Error(),
+		}
+	}
+
+	// 6. Git commit.
+	commitMsg := fmt.Sprintf("sundial: add schedule %s (%s)", id, name)
+	if err := d.gitOps.CommitSchedule(filePath, commitMsg); err != nil {
+		return nil, &model.RPCError{
+			Code:    model.RPCErrCodeGitPrecondition,
+			Message: "git commit failed: " + err.Error(),
+		}
+	}
+
+	// 7. Create RuntimeState, write to store.
+	nextFire := trig.NextFireTime(time.Now())
+	runtime := &model.RuntimeState{
+		ID:         id,
+		NextFireAt: nextFire,
+	}
+
+	var recovery, warning string
+	if err := d.runtimeStore.Write(runtime); err != nil {
+		// 8. If runtime write fails, trigger reconcile.
+		log.Printf("WARN: runtime write failed for %s, triggering reconcile: %v", id, err)
+		recovery = "runtime state write failed; reconciliation triggered"
+		warning = err.Error()
+		go func() {
+			if err := d.reconcile(false); err != nil {
+				log.Printf("WARN: reconcile after runtime write failure: %v", err)
+			}
+		}()
+	}
+
+	// 9. Git push (best-effort).
+	if err := d.gitOps.Push(); err != nil {
+		log.Printf("WARN: git push failed (will retry on reload): %v", err)
+		if warning == "" {
+			warning = "git push failed: " + err.Error()
+		}
+	}
+
+	// 10. Add to active schedules, signal wake.
+	d.mu.Lock()
+	d.schedules[id] = &activeSchedule{
+		desired: desired,
+		runtime: runtime,
+		trigger: trig,
+	}
+	d.mu.Unlock()
+	d.signalWake()
+
+	// 11. Build result.
+	loc := time.Local
+	if trigCfg.Location != nil && trigCfg.Location.Timezone != "" {
+		if l, err := time.LoadLocation(trigCfg.Location.Timezone); err == nil {
+			loc = l
+		}
+	}
+
+	result := &model.AddResult{
+		ID:          id,
+		Name:        name,
+		Schedule:    trig.HumanDescription(),
+		NextFire:    nextFire.In(loc).Format("Mon Jan 2 3:04 PM MST"),
+		NextFireUTC: nextFire.UTC().Format(time.RFC3339),
+		Status:      "active",
+		SavedTo:     relPath,
+		Committed:   commitMsg,
+		Recovery:    recovery,
+		Warning:     warning,
+	}
+
+	return result, nil
+}
+
+// handleRemove marks schedules as removed.
+func (d *Daemon) handleRemove(p model.RemoveParams) (*model.RemoveResult, *model.RPCError) {
+	d.mu.Lock()
+
+	var toRemove []string
+	if p.All {
+		for id := range d.schedules {
+			toRemove = append(toRemove, id)
+		}
+	} else {
+		if _, ok := d.schedules[p.ID]; !ok {
+			d.mu.Unlock()
+			return nil, &model.RPCError{
+				Code:    model.RPCErrCodeNotFound,
+				Message: fmt.Sprintf("schedule %s not found", p.ID),
+			}
+		}
+		toRemove = []string{p.ID}
+	}
+	d.mu.Unlock()
+
+	removed := 0
+	var lastCommitMsg string
+
+	for _, id := range toRemove {
+		d.mu.RLock()
+		sched, ok := d.schedules[id]
+		d.mu.RUnlock()
+		if !ok {
+			continue
+		}
+
+		// Update desired state to "removed".
+		sched.desired.Status = model.StatusRemoved
+		if err := d.desiredStore.Write(sched.desired); err != nil {
+			log.Printf("WARN: schedule %s: failed to write removed state: %v", id, err)
+			continue
+		}
+
+		// Git commit.
+		filePath := d.desiredStore.FilePath(id)
+		commitMsg := fmt.Sprintf("sundial: remove schedule %s (%s)", id, sched.desired.Name)
+		if err := d.gitOps.CommitSchedule(filePath, commitMsg); err != nil {
+			log.Printf("WARN: schedule %s: git commit failed: %v", id, err)
+		}
+		lastCommitMsg = commitMsg
+
+		// Delete runtime state.
+		if err := d.runtimeStore.Delete(id); err != nil {
+			log.Printf("WARN: schedule %s: failed to delete runtime state: %v", id, err)
+		}
+
+		// Remove from active schedules.
+		d.mu.Lock()
+		delete(d.schedules, id)
+		d.mu.Unlock()
+
+		removed++
+	}
+
+	d.signalWake()
+
+	// Git push (best-effort).
+	if removed > 0 {
+		if err := d.gitOps.Push(); err != nil {
+			log.Printf("WARN: git push failed after remove: %v", err)
+		}
+	}
+
+	result := &model.RemoveResult{
+		Removed:   removed,
+		Committed: lastCommitMsg,
+	}
+	if !p.All && len(toRemove) == 1 {
+		result.ID = toRemove[0]
+	}
+
+	return result, nil
+}
+
+// handleList returns a summary of all active schedules.
+func (d *Daemon) handleList() (*model.ListResult, *model.RPCError) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	schedules := make([]model.ScheduleSummary, 0, len(d.schedules))
+	for _, sched := range d.schedules {
+		summary := buildSummary(sched)
+		schedules = append(schedules, summary)
+	}
+
+	return &model.ListResult{Schedules: schedules}, nil
+}
+
+// handleShow returns detailed info for a single schedule.
+func (d *Daemon) handleShow(p model.ShowParams) (*model.ShowResult, *model.RPCError) {
+	d.mu.RLock()
+	sched, ok := d.schedules[p.ID]
+	d.mu.RUnlock()
+
+	if !ok {
+		return nil, &model.RPCError{
+			Code:    model.RPCErrCodeNotFound,
+			Message: fmt.Sprintf("schedule %s not found", p.ID),
+		}
+	}
+
+	summary := buildSummary(sched)
+
+	// Count missed fires from run logs.
+	missedCount, err := d.runLogStore.MissedSince(sched.desired.ID, sched.desired.CreatedAt)
+	if err != nil {
+		log.Printf("WARN: schedule %s: failed to count misses: %v", p.ID, err)
+	}
+	summary.MissedCount = missedCount
+
+	result := &model.ShowResult{
+		ScheduleSummary:   summary,
+		Command:           sched.desired.Command,
+		UserRequest:       sched.desired.UserRequest,
+		CreatedAt:         sched.desired.CreatedAt.Format(time.RFC3339),
+		RecreationCommand: sched.desired.RecreationCommand,
+	}
+
+	return result, nil
+}
+
+// handleReload triggers a reconciliation and retries pending pushes.
+func (d *Daemon) handleReload() (*model.ReloadResult, *model.RPCError) {
+	if err := d.reconcile(false); err != nil {
+		return nil, &model.RPCError{
+			Code:    model.RPCErrCodeInternal,
+			Message: "reconciliation failed: " + err.Error(),
+		}
+	}
+
+	// Retry pending pushes.
+	pendingPushes := false
+	hasPending, err := d.gitOps.HasPendingPushes()
+	if err != nil {
+		log.Printf("WARN: failed to check pending pushes: %v", err)
+	} else if hasPending {
+		pendingPushes = true
+		if err := d.gitOps.Push(); err != nil {
+			log.Printf("WARN: retry push failed: %v", err)
+		} else {
+			pendingPushes = false
+		}
+	}
+
+	d.mu.RLock()
+	count := len(d.schedules)
+	d.mu.RUnlock()
+
+	return &model.ReloadResult{
+		Reconciled:    count,
+		PendingPushes: pendingPushes,
+		Message:       fmt.Sprintf("reconciled %d schedules", count),
+	}, nil
+}
+
+// handleHealth runs all health checks and returns the result.
+func (d *Daemon) handleHealth() (*model.HealthResult, *model.RPCError) {
+	result := &model.HealthResult{
+		DaemonRunning: true,
+		Checks:        make([]model.HealthCheck, 0),
+	}
+
+	// Daemon running check.
+	result.Checks = append(result.Checks, model.HealthCheck{
+		Name:   "daemon_running",
+		Status: "ok",
+	})
+
+	// Config valid check.
+	configErr := config.Validate(d.cfg)
+	result.ConfigValid = configErr == nil
+	if configErr == nil {
+		result.Checks = append(result.Checks, model.HealthCheck{
+			Name:   "config_valid",
+			Status: "ok",
+		})
+	} else {
+		result.Checks = append(result.Checks, model.HealthCheck{
+			Name:    "config_valid",
+			Status:  "error",
+			Message: configErr.Error(),
+		})
+	}
+
+	// Data repo check.
+	repoExists := false
+	if info, err := os.Stat(d.cfg.DataRepo); err == nil && info.IsDir() {
+		gitDir := filepath.Join(d.cfg.DataRepo, ".git")
+		if info, err := os.Stat(gitDir); err == nil && info.IsDir() {
+			repoExists = true
+		}
+	}
+	result.DataRepoOK = repoExists
+	if repoExists {
+		result.Checks = append(result.Checks, model.HealthCheck{
+			Name:   "data_repo",
+			Status: "ok",
+		})
+	} else {
+		result.Checks = append(result.Checks, model.HealthCheck{
+			Name:    "data_repo",
+			Status:  "error",
+			Message: "data repo path does not exist or is not a git repository",
+		})
+	}
+
+	// Git status check.
+	gitClean := true
+	preErr := d.gitOps.CheckRepoPreconditions()
+	if preErr != nil {
+		gitClean = false
+		result.Checks = append(result.Checks, model.HealthCheck{
+			Name:    "git_preconditions",
+			Status:  "warn",
+			Message: preErr.Error(),
+		})
+	} else {
+		result.Checks = append(result.Checks, model.HealthCheck{
+			Name:   "git_preconditions",
+			Status: "ok",
+		})
+	}
+
+	// Pending pushes.
+	hasPending, err := d.gitOps.HasPendingPushes()
+	if err != nil {
+		result.Checks = append(result.Checks, model.HealthCheck{
+			Name:    "pending_pushes",
+			Status:  "warn",
+			Message: err.Error(),
+		})
+	} else if hasPending {
+		result.PendingPushes = true
+		gitClean = false
+		result.Checks = append(result.Checks, model.HealthCheck{
+			Name:    "pending_pushes",
+			Status:  "warn",
+			Message: "local commits not yet pushed",
+		})
+	} else {
+		result.Checks = append(result.Checks, model.HealthCheck{
+			Name:   "pending_pushes",
+			Status: "ok",
+		})
+	}
+
+	// Modified schedule files.
+	schedulesDir := filepath.Join(d.cfg.DataRepo, "sundial", "schedules")
+	modFiles, err := d.gitOps.ListModifiedScheduleFiles(schedulesDir)
+	if err != nil {
+		log.Printf("WARN: failed to list modified schedule files: %v", err)
+	}
+	if len(modFiles) > 0 {
+		gitClean = false
+		result.ScheduleFileWarnings = modFiles
+		result.Checks = append(result.Checks, model.HealthCheck{
+			Name:    "schedule_files",
+			Status:  "warn",
+			Message: fmt.Sprintf("%d schedule files have local modifications", len(modFiles)),
+		})
+	}
+	result.DataRepoGitClean = gitClean
+
+	// Schedule count.
+	d.mu.RLock()
+	result.ScheduleCount = len(d.schedules)
+
+	// Orphaned schedules (runtime without desired).
+	// Since we track only active schedules, we detect orphans from runtime store.
+	d.mu.RUnlock()
+
+	runtimeList, err := d.runtimeStore.List()
+	if err == nil {
+		d.mu.RLock()
+		for _, rs := range runtimeList {
+			if _, ok := d.schedules[rs.ID]; !ok {
+				result.OrphanedSchedules = append(result.OrphanedSchedules, rs.ID)
+			}
+		}
+		d.mu.RUnlock()
+	}
+
+	// Effective PATH.
+	result.EffectivePath = os.Getenv("PATH")
+
+	// Overall healthy status.
+	result.Healthy = result.DaemonRunning && result.ConfigValid && result.DataRepoOK && result.DataRepoGitClean
+
+	return result, nil
+}
+
+// buildSummary constructs a ScheduleSummary from an activeSchedule.
+func buildSummary(sched *activeSchedule) model.ScheduleSummary {
+	summary := model.ScheduleSummary{
+		ID:       sched.desired.ID,
+		Name:     sched.desired.Name,
+		Schedule: sched.trigger.HumanDescription(),
+		Status:   string(sched.desired.Status),
+	}
+
+	if !sched.runtime.NextFireAt.IsZero() {
+		summary.NextFire = sched.runtime.NextFireAt.Local().Format("Mon Jan 2 3:04 PM MST")
+		summary.NextFireUTC = sched.runtime.NextFireAt.UTC().Format(time.RFC3339)
+	}
+
+	if sched.runtime.LastFiredAt != nil {
+		summary.LastFire = sched.runtime.LastFiredAt.Local().Format("Mon Jan 2 3:04 PM MST")
+	}
+
+	summary.LastExitCode = sched.runtime.LastExitCode
+
+	return summary
+}
