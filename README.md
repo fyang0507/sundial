@@ -11,21 +11,22 @@ Sundial lets you schedule recurring shell commands using standard cron expressio
 **Prerequisites:** Go 1.21+, macOS, a git repository for schedule data.
 
 ```bash
-# Build from source
+# Build and install to PATH
 go build -o sundial .
+sudo mv sundial /usr/local/bin/
 
-# Copy and edit the config (data_repo is the only required field)
+# Create config (data_repo is the only required field)
 cp config.yaml.example config.yaml
 # Edit config.yaml: set data_repo to the path of your git data repo
 
 # Install the daemon as a launchd service
-./sundial install
+sundial install
 
 # Verify the daemon is running
-./sundial health
+sundial health
 
 # Create your first schedule
-./sundial add --type cron --cron "0 9 * * 1-5" \
+sundial add --type cron --cron "0 9 * * 1-5" \
   --command "cd ~/project && codex exec 'daily standup'" \
   --name "weekday standup"
 ```
@@ -80,18 +81,22 @@ sundial geocode "San Francisco, CA"
 
 ## Configuration
 
-Place `config.yaml` in the project root alongside the sundial binary (or pass `--config`). The only required field is `data_repo`.
+Place `config.yaml` in the project root alongside the sundial binary (or set `SUNDIAL_CONFIG` / pass `--config`). The only required field is `data_repo` -- everything else has sensible defaults.
 
 ```yaml
-data_repo: "~/data_repo"             # REQUIRED -- path to git repo for schedule definitions
+data_repo: "~/data_repo"   # REQUIRED -- path to git repo for schedule definitions
+```
 
+All other fields are optional and default to:
+
+```yaml
 daemon:
   socket_path: "~/Library/Application Support/sundial/sundial.sock"
-  log_level: info                    # debug | info | warn | error
+  log_level: info                      # debug | info | warn | error
   log_file: "~/Library/Logs/sundial/sundial.log"
 
 state:
-  path: "~/.config/sundial/state/"   # runtime state (daemon-managed, not portable)
+  path: "~/.config/sundial/state/"     # runtime state (local, not portable)
   logs_path: "~/.config/sundial/logs/" # run logs (local only)
 ```
 
@@ -159,12 +164,12 @@ See [CLAUDE.md](CLAUDE.md) for the full package map and agent-facing development
 
 ```bash
 # Start the daemon in the foreground for testing
-./sundial daemon --config config.yaml
+sundial daemon --config config.yaml
 
 # In another terminal, interact via the CLI
-./sundial health
-./sundial add --type cron --cron "* * * * *" --command "echo tick" --name "test"
-./sundial list
+sundial health
+sundial add --type cron --cron "* * * * *" --command "echo tick" --name "test"
+sundial list
 ```
 
 ## Status

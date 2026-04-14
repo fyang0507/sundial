@@ -1,13 +1,15 @@
 # Sundial configuration — copy to config.yaml and set data_repo before running `sundial install`.
-# All fields optional except data_repo — defaults shown.
+# Only data_repo is required. All other fields have sensible defaults and can be omitted.
 
-data_repo: "~/data_repo"             # REQUIRED — path to the data repo for schedule definitions
+data_repo: "~/data_repo"   # REQUIRED — path to the data repo for schedule definitions
 
-daemon:
-  socket_path: "~/Library/Application Support/sundial/sundial.sock"
-  log_level: info                    # debug | info | warn | error
-  log_file: "~/Library/Logs/sundial/sundial.log"
-
-state:
-  path: "~/.config/sundial/state/"   # runtime state (daemon-managed, not portable)
-  logs_path: "~/.config/sundial/logs/" # run logs (local only)
+# Uncomment and modify below to override defaults:
+#
+# daemon:
+#   socket_path: "~/Library/Application Support/sundial/sundial.sock"
+#   log_level: info                      # debug | info | warn | error
+#   log_file: "~/Library/Logs/sundial/sundial.log"
+#
+# state:
+#   path: "~/.config/sundial/state/"     # runtime state (daemon-managed, not portable)
+#   logs_path: "~/.config/sundial/logs/" # run logs (local only)
