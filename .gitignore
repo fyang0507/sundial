@@ -14,3 +14,6 @@ Thumbs.db
 
 # Go
 /vendor/
+
+# Config
+config.yaml
