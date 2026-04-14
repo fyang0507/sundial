@@ -5,9 +5,11 @@ Agent-first CLI scheduler with cron and solar triggers. Go project targeting mac
 ## Build & Run
 
 ```bash
-go build -o sundial .        # build binary
-go test ./...                 # run all tests
-go vet ./...                  # static analysis
+make build                    # build binary
+make install                  # build and install to /usr/local/bin
+make test                     # run all tests
+make vet                      # static analysis
+make clean                    # remove local binary
 ```
 
 ## Architecture

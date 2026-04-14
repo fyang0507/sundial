@@ -12,8 +12,7 @@ Sundial lets you schedule recurring shell commands using standard cron expressio
 
 ```bash
 # Build and install to PATH
-go build -o sundial .
-sudo mv sundial /usr/local/bin/
+make install
 
 # Create config (data_repo is the only required field)
 cp config.yaml.example config.yaml
@@ -136,9 +135,11 @@ Design follows the [CLI-for-Agents](https://github.com/cursor/plugins/blob/main/
 ## Development
 
 ```bash
-go build -o sundial .    # build
-go test ./...            # run all tests
-go vet ./...             # static analysis
+make build               # build binary
+make install             # build and install to /usr/local/bin
+make test                # run all tests
+make vet                 # static analysis
+make clean               # remove local binary
 ```
 
 ### Project structure
