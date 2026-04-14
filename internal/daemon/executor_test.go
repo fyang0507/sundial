@@ -40,9 +40,9 @@ func TestRunCommand_StderrCapture(t *testing.T) {
 }
 
 func TestRunCommand_OutputTruncation(t *testing.T) {
-	// Generate output larger than 10KB.
-	// Each iteration prints ~80 chars, 200 iterations = ~16KB.
-	result := runCommand("for i in $(seq 1 200); do echo 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'; done")
+	// Generate output larger than 10KB using printf which is a shell builtin
+	// and avoids spawning external processes (more reliable under parallel test load).
+	result := runCommand("printf '%0.sa]' {1..16000}")
 
 	if len(result.StdoutPreview) > maxOutputCapture {
 		t.Errorf("expected stdout to be capped at %d bytes, got %d",
