@@ -7,9 +7,9 @@ DATA_REPO := $(shell grep '^data_repo:' config.yaml 2>/dev/null | sed 's/data_re
 build:
 	go build -o $(BINARY) .
 ifdef DATA_REPO
-	@mkdir -p "$(DATA_REPO)/skills"
-	@cp -R skills/sundial "$(DATA_REPO)/skills/"
-	@echo "skills/sundial copied to $(DATA_REPO)/skills/sundial"
+	@mkdir -p "$(DATA_REPO)/.agents/skills"
+	@cp -R skills/sundial "$(DATA_REPO)/.agents/skills/"
+	@echo "skills/sundial copied to $(DATA_REPO)/.agents/skills/sundial"
 endif
 
 install: build
