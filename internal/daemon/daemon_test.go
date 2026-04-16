@@ -2,12 +2,41 @@ package daemon
 
 import (
 	"encoding/json"
+	"os/exec"
 	"testing"
 	"time"
 
 	"github.com/fyang0507/sundial/internal/model"
 	"github.com/fyang0507/sundial/internal/trigger"
 )
+
+// newTestDaemonWithGit creates a test daemon whose data repo is a real git
+// repository, so that handlers calling gitOps (commit, push, etc.) succeed.
+func newTestDaemonWithGit(t *testing.T) *Daemon {
+	t.Helper()
+	d := newTestDaemon(t)
+	initTestGitRepo(t, d.cfg.DataRepo)
+	return d
+}
+
+// initTestGitRepo initializes a git repo with an initial commit.
+func initTestGitRepo(t *testing.T, dir string) {
+	t.Helper()
+	cmds := [][]string{
+		{"git", "init"},
+		{"git", "config", "user.email", "test@sundial.dev"},
+		{"git", "config", "user.name", "Sundial Test"},
+		{"git", "commit", "--allow-empty", "-m", "init"},
+	}
+	for _, args := range cmds {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = dir
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git command %v failed: %v\n%s", args, err, out)
+		}
+	}
+}
 
 func TestHandleList_Empty(t *testing.T) {
 	d := newTestDaemon(t)
@@ -736,5 +765,499 @@ func TestHandleAdd_ExactTakesPriorityOverFuzzy(t *testing.T) {
 	}
 	if dupInfo.MatchType != "exact_command" {
 		t.Errorf("expected exact match to take priority, got %q", dupInfo.MatchType)
+	}
+}
+
+func TestFindCompletedByName(t *testing.T) {
+	d := newTestDaemon(t)
+
+	// Write a completed desired state.
+	desired := makePollDesired("sch_fn01", "watch-replies", "check-cmd", "2m")
+	desired.Status = model.StatusCompleted
+	desired.Command = "echo fire"
+	if err := d.desiredStore.Write(desired); err != nil {
+		t.Fatal(err)
+	}
+
+	// Should find by name.
+	found := d.findCompletedByName("watch-replies")
+	if found == nil {
+		t.Fatal("expected to find completed schedule by name")
+	}
+	if found.ID != "sch_fn01" {
+		t.Errorf("expected ID sch_fn01, got %s", found.ID)
+	}
+
+	// Should not find for different name.
+	notFound := d.findCompletedByName("other-name")
+	if notFound != nil {
+		t.Error("expected no match for different name")
+	}
+
+	// Should not find active schedules.
+	active := makeCronDesired("sch_fn02", "active-sched", "0 9 * * *")
+	if err := d.desiredStore.Write(active); err != nil {
+		t.Fatal(err)
+	}
+	notFound = d.findCompletedByName("active-sched")
+	if notFound != nil {
+		t.Error("expected no match for active schedule")
+	}
+
+	// Empty name should return nil.
+	notFound = d.findCompletedByName("")
+	if notFound != nil {
+		t.Error("expected nil for empty name")
+	}
+}
+
+func TestReactivation_ByNameWithUpdatedCommand(t *testing.T) {
+	d := newTestDaemonWithGit(t)
+
+	// Write a completed schedule with a specific name and command.
+	desired := makePollDesired("sch_rn01", "outreach-watch", "check-cmd", "2m")
+	desired.Status = model.StatusCompleted
+	desired.Command = "echo old-callback"
+	if err := d.desiredStore.Write(desired); err != nil {
+		t.Fatal(err)
+	}
+
+	// Re-add with same name but different command.
+	params := model.AddParams{
+		Type:           model.TriggerTypePoll,
+		TriggerCommand: "check-cmd",
+		Interval:       "2m",
+		Timeout:        "72h",
+		Command:        "echo new-callback",
+		Name:           "outreach-watch",
+	}
+
+	result, rpcErr := d.handleAdd(params)
+	if rpcErr != nil {
+		t.Fatalf("unexpected error: %v", rpcErr.Message)
+	}
+
+	// Should reactivate the same schedule, not create new.
+	if result.ID != "sch_rn01" {
+		t.Errorf("expected reactivation of sch_rn01, got new ID %s", result.ID)
+	}
+	if result.Status != "reactivated" {
+		t.Errorf("expected status 'reactivated', got %q", result.Status)
+	}
+
+	// Command should be updated.
+	ds, err := d.desiredStore.Read("sch_rn01")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ds.Command != "echo new-callback" {
+		t.Errorf("expected command to be updated to 'echo new-callback', got %q", ds.Command)
+	}
+	if ds.Status != model.StatusActive {
+		t.Errorf("expected status 'active', got %q", ds.Status)
+	}
+}
+
+func TestReactivation_ByCommandFallback(t *testing.T) {
+	d := newTestDaemonWithGit(t)
+
+	// Write a completed schedule.
+	desired := makePollDesired("sch_rc01", "old-name", "check-cmd", "2m")
+	desired.Status = model.StatusCompleted
+	desired.Command = "echo fire"
+	if err := d.desiredStore.Write(desired); err != nil {
+		t.Fatal(err)
+	}
+
+	// Re-add with same command but no name — should fall back to command match.
+	params := model.AddParams{
+		Type:           model.TriggerTypePoll,
+		TriggerCommand: "check-cmd",
+		Interval:       "2m",
+		Timeout:        "72h",
+		Command:        "echo fire",
+	}
+
+	result, rpcErr := d.handleAdd(params)
+	if rpcErr != nil {
+		t.Fatalf("unexpected error: %v", rpcErr.Message)
+	}
+
+	if result.ID != "sch_rc01" {
+		t.Errorf("expected reactivation of sch_rc01, got %s", result.ID)
+	}
+	if result.Status != "reactivated" {
+		t.Errorf("expected status 'reactivated', got %q", result.Status)
+	}
+}
+
+func TestReactivation_NameTakesPriorityOverCommand(t *testing.T) {
+	d := newTestDaemonWithGit(t)
+
+	// Two completed schedules with same command but different names.
+	ds1 := makePollDesired("sch_pri01", "name-alpha", "check-cmd", "2m")
+	ds1.Status = model.StatusCompleted
+	ds1.Command = "echo shared-cmd"
+	ds2 := makePollDesired("sch_pri02", "name-beta", "check-cmd", "2m")
+	ds2.Status = model.StatusCompleted
+	ds2.Command = "echo shared-cmd"
+
+	for _, ds := range []*model.DesiredState{ds1, ds2} {
+		if err := d.desiredStore.Write(ds); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Re-add targeting name-beta — should reactivate sch_pri02 by name,
+	// not whichever one findCompletedByCommand happens to return first.
+	params := model.AddParams{
+		Type:           model.TriggerTypePoll,
+		TriggerCommand: "check-cmd",
+		Interval:       "2m",
+		Timeout:        "72h",
+		Command:        "echo shared-cmd",
+		Name:           "name-beta",
+	}
+
+	result, rpcErr := d.handleAdd(params)
+	if rpcErr != nil {
+		t.Fatalf("unexpected error: %v", rpcErr.Message)
+	}
+
+	if result.ID != "sch_pri02" {
+		t.Errorf("expected name match to reactivate sch_pri02, got %s", result.ID)
+	}
+}
+
+// --- Refresh (--refresh) tests ---
+
+func TestHandleAdd_RefreshUpdatesActiveSchedule(t *testing.T) {
+	d := newTestDaemonWithGit(t)
+
+	// Seed an active poll schedule.
+	desired := makePollDesired("sch_ref01", "outreach-watch", "check-cmd", "2m")
+	desired.Command = "echo old-callback"
+	trig, _ := trigger.ParseTrigger(desired.Trigger)
+	runtime := &model.RuntimeState{
+		ID:         "sch_ref01",
+		NextFireAt: trig.NextFireTime(time.Now()),
+		FireCount:  5,
+	}
+
+	d.mu.Lock()
+	d.schedules["sch_ref01"] = &activeSchedule{
+		desired: desired,
+		runtime: runtime,
+		trigger: trig,
+	}
+	d.mu.Unlock()
+
+	if err := d.desiredStore.Write(desired); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.runtimeStore.Write(runtime); err != nil {
+		t.Fatal(err)
+	}
+
+	// Refresh with new command and timeout.
+	params := model.AddParams{
+		Type:           model.TriggerTypePoll,
+		TriggerCommand: "check-cmd",
+		Interval:       "5m",
+		Timeout:        "144h",
+		Command:        "echo new-callback",
+		Name:           "outreach-watch",
+		Refresh:        true,
+		Once:           true,
+	}
+
+	result, rpcErr := d.handleAdd(params)
+	if rpcErr != nil {
+		t.Fatalf("unexpected error: %v", rpcErr.Message)
+	}
+
+	// Should preserve the original ID.
+	if result.ID != "sch_ref01" {
+		t.Errorf("expected same ID sch_ref01, got %s", result.ID)
+	}
+	if result.Status != "refreshed" {
+		t.Errorf("expected status 'refreshed', got %q", result.Status)
+	}
+
+	// Verify desired state was updated.
+	ds, err := d.desiredStore.Read("sch_ref01")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ds.Command != "echo new-callback" {
+		t.Errorf("expected command updated, got %q", ds.Command)
+	}
+	if ds.Trigger.Interval != "5m" {
+		t.Errorf("expected interval updated to 5m, got %q", ds.Trigger.Interval)
+	}
+	if ds.Trigger.Timeout != "144h" {
+		t.Errorf("expected timeout updated to 144h, got %q", ds.Trigger.Timeout)
+	}
+	if !ds.Once {
+		t.Error("expected Once to be set")
+	}
+
+	// Runtime should have been reset (FireCount back to 0).
+	d.mu.RLock()
+	sched := d.schedules["sch_ref01"]
+	d.mu.RUnlock()
+	if sched.runtime.FireCount != 0 {
+		t.Errorf("expected FireCount reset to 0, got %d", sched.runtime.FireCount)
+	}
+	if sched.runtime.NextFireAt.IsZero() {
+		t.Error("expected NextFireAt to be set")
+	}
+}
+
+func TestHandleAdd_RefreshWithoutNameErrors(t *testing.T) {
+	// This is validated in cmd/add.go, but the daemon should also handle it
+	// gracefully — without a name, there's no exact name match, so --refresh
+	// is a no-op (falls through to normal duplicate detection or creation).
+	d := newTestDaemonWithGit(t)
+
+	params := model.AddParams{
+		Type:           model.TriggerTypePoll,
+		TriggerCommand: "check-cmd",
+		Interval:       "2m",
+		Timeout:        "72h",
+		Command:        "echo test",
+		Refresh:        true,
+		// No Name — no exact name match possible, falls through to normal add.
+	}
+
+	result, rpcErr := d.handleAdd(params)
+	if rpcErr != nil {
+		t.Fatalf("unexpected error: %v", rpcErr.Message)
+	}
+
+	// Should create a new schedule (no name match to refresh).
+	if result.Status != "active" {
+		t.Errorf("expected status 'active' (new creation), got %q", result.Status)
+	}
+}
+
+func TestHandleAdd_RefreshNoMatchCreatesNew(t *testing.T) {
+	d := newTestDaemonWithGit(t)
+
+	// No existing schedule with this name.
+	params := model.AddParams{
+		Type:           model.TriggerTypePoll,
+		TriggerCommand: "check-cmd",
+		Interval:       "2m",
+		Timeout:        "72h",
+		Command:        "echo test",
+		Name:           "nonexistent-name",
+		Refresh:        true,
+	}
+
+	result, rpcErr := d.handleAdd(params)
+	if rpcErr != nil {
+		t.Fatalf("unexpected error: %v", rpcErr.Message)
+	}
+
+	// No match → creates new schedule.
+	if result.Status != "active" {
+		t.Errorf("expected status 'active' (new creation), got %q", result.Status)
+	}
+	if result.Name != "nonexistent-name" {
+		t.Errorf("expected name 'nonexistent-name', got %q", result.Name)
+	}
+}
+
+func TestHandleAdd_RefreshAndForceAreExclusive(t *testing.T) {
+	// CLI validates this, but verify daemon behavior: --force skips duplicate
+	// detection entirely, so --refresh never triggers. This test just confirms
+	// --force wins (creates new schedule, no refresh).
+	d := newTestDaemonWithGit(t)
+
+	desired := makeCronDesired("sch_rf01", "force-refresh", "0 9 * * *")
+	trig, _ := trigger.ParseTrigger(desired.Trigger)
+	d.mu.Lock()
+	d.schedules["sch_rf01"] = &activeSchedule{
+		desired: desired,
+		runtime: &model.RuntimeState{
+			ID:         "sch_rf01",
+			NextFireAt: trig.NextFireTime(time.Now()),
+		},
+		trigger: trig,
+	}
+	d.mu.Unlock()
+
+	params := model.AddParams{
+		Type:    model.TriggerTypeCron,
+		Cron:    "0 10 * * *",
+		Command: "echo different",
+		Name:    "force-refresh",
+		Force:   true,
+		Refresh: true,
+	}
+
+	result, rpcErr := d.handleAdd(params)
+	if rpcErr != nil {
+		// Might fail at git — that's OK, just shouldn't fail at duplicate check.
+		if rpcErr.Code == model.RPCErrCodeDuplicate {
+			t.Error("expected Force to bypass duplicate check")
+		}
+		return
+	}
+
+	// Force creates a new schedule with a different ID.
+	if result.ID == "sch_rf01" {
+		t.Error("expected new ID when --force is used, got original ID")
+	}
+}
+
+func TestHandleAdd_RefreshPreservePausedStatus(t *testing.T) {
+	d := newTestDaemonWithGit(t)
+
+	// Seed a paused schedule.
+	desired := makeCronDesired("sch_rp01", "paused-refresh", "0 9 * * *")
+	desired.Status = model.StatusPaused
+	trig, _ := trigger.ParseTrigger(desired.Trigger)
+	runtime := &model.RuntimeState{
+		ID: "sch_rp01",
+		// NextFireAt is zero for paused schedules.
+	}
+
+	d.mu.Lock()
+	d.schedules["sch_rp01"] = &activeSchedule{
+		desired: desired,
+		runtime: runtime,
+		trigger: trig,
+	}
+	d.mu.Unlock()
+
+	if err := d.desiredStore.Write(desired); err != nil {
+		t.Fatal(err)
+	}
+
+	params := model.AddParams{
+		Type:    model.TriggerTypeCron,
+		Cron:    "0 10 * * *",
+		Command: "echo updated",
+		Name:    "paused-refresh",
+		Refresh: true,
+	}
+
+	result, rpcErr := d.handleAdd(params)
+	if rpcErr != nil {
+		t.Fatalf("unexpected error: %v", rpcErr.Message)
+	}
+
+	if result.ID != "sch_rp01" {
+		t.Errorf("expected same ID, got %s", result.ID)
+	}
+	if result.Status != "refreshed" {
+		t.Errorf("expected status 'refreshed', got %q", result.Status)
+	}
+
+	// Status should remain paused.
+	ds, err := d.desiredStore.Read("sch_rp01")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ds.Status != model.StatusPaused {
+		t.Errorf("expected status to remain 'paused', got %q", ds.Status)
+	}
+
+	// NextFireAt should be zero (still paused).
+	d.mu.RLock()
+	sched := d.schedules["sch_rp01"]
+	d.mu.RUnlock()
+	if !sched.runtime.NextFireAt.IsZero() {
+		t.Error("expected zero NextFireAt for paused schedule after refresh")
+	}
+}
+
+func TestHandleAdd_RefreshResetsCreatedAt(t *testing.T) {
+	d := newTestDaemonWithGit(t)
+
+	// Seed a poll schedule created 70h ago with 72h timeout.
+	desired := makePollDesired("sch_rca01", "timeout-refresh", "check-cmd", "2m")
+	desired.CreatedAt = time.Now().Add(-70 * time.Hour)
+	trig, _ := trigger.ParseTrigger(desired.Trigger)
+	runtime := &model.RuntimeState{
+		ID:         "sch_rca01",
+		NextFireAt: trig.NextFireTime(time.Now()),
+	}
+
+	d.mu.Lock()
+	d.schedules["sch_rca01"] = &activeSchedule{
+		desired: desired,
+		runtime: runtime,
+		trigger: trig,
+	}
+	d.mu.Unlock()
+
+	if err := d.desiredStore.Write(desired); err != nil {
+		t.Fatal(err)
+	}
+
+	beforeRefresh := time.Now()
+	params := model.AddParams{
+		Type:           model.TriggerTypePoll,
+		TriggerCommand: "check-cmd",
+		Interval:       "2m",
+		Timeout:        "72h",
+		Command:        "echo fire",
+		Name:           "timeout-refresh",
+		Refresh:        true,
+	}
+
+	_, rpcErr := d.handleAdd(params)
+	if rpcErr != nil {
+		t.Fatalf("unexpected error: %v", rpcErr.Message)
+	}
+
+	// CreatedAt should be reset to approximately now.
+	ds, err := d.desiredStore.Read("sch_rca01")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ds.CreatedAt.Before(beforeRefresh) {
+		t.Errorf("expected CreatedAt to be reset to now, got %v (before refresh at %v)",
+			ds.CreatedAt, beforeRefresh)
+	}
+}
+
+func TestHandleAdd_RefreshWithoutExactNameFallsToNormalDuplicateCheck(t *testing.T) {
+	d := newTestDaemon(t)
+
+	// Seed an active schedule with a specific command.
+	desired := makeCronDesired("sch_rfc01", "different-name", "0 9 * * *")
+	desired.Command = "echo samecmd"
+	trig, _ := trigger.ParseTrigger(desired.Trigger)
+	d.mu.Lock()
+	d.schedules["sch_rfc01"] = &activeSchedule{
+		desired: desired,
+		runtime: &model.RuntimeState{
+			ID:         "sch_rfc01",
+			NextFireAt: trig.NextFireTime(time.Now()),
+		},
+		trigger: trig,
+	}
+	d.mu.Unlock()
+
+	// --refresh with a name that doesn't match, but command does match.
+	// Should still hit duplicate command error (refresh only intercepts exact name).
+	params := model.AddParams{
+		Type:    model.TriggerTypeCron,
+		Cron:    "0 10 * * *",
+		Command: "echo samecmd",
+		Name:    "no-match-name",
+		Refresh: true,
+	}
+
+	_, rpcErr := d.handleAdd(params)
+	if rpcErr == nil {
+		t.Fatal("expected duplicate command error")
+	}
+	if rpcErr.Code != model.RPCErrCodeDuplicate {
+		t.Errorf("expected duplicate error code, got %d", rpcErr.Code)
 	}
 }

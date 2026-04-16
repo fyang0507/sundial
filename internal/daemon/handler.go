@@ -131,6 +131,9 @@ func (d *Daemon) handleAdd(p model.AddParams) (*model.AddResult, *model.RPCError
 			// Exact checks first — these take priority.
 			if p.Name != "" && sched.desired.Name == p.Name {
 				d.mu.RUnlock()
+				if p.Refresh {
+					return d.refreshActiveSchedule(sched, trigCfg, trig, p)
+				}
 				dupInfo := &model.DuplicateInfo{
 					ExistingID:   sched.desired.ID,
 					ExistingName: sched.desired.Name,
@@ -189,7 +192,12 @@ func (d *Daemon) handleAdd(p model.AddParams) (*model.AddResult, *model.RPCError
 	}
 	d.mu.RUnlock()
 
-	// 3b. Check for completed schedules with matching command — reactivate instead of creating new.
+	// 3b. Check for completed schedules — reactivate instead of creating new.
+	// Name match takes priority (consistent with active duplicate detection order).
+	// Command match is the fallback (preserves existing behavior for unnamed schedules).
+	if completed := d.findCompletedByName(p.Name); completed != nil {
+		return d.reactivateSchedule(completed, trigCfg, trig, p)
+	}
 	if completed := d.findCompletedByCommand(p.Command); completed != nil {
 		return d.reactivateSchedule(completed, trigCfg, trig, p)
 	}
@@ -726,6 +734,25 @@ func (d *Daemon) handleHealth() (*model.HealthResult, *model.RPCError) {
 	return result, nil
 }
 
+// findCompletedByName scans the desired store for a completed schedule
+// with a matching name. Returns nil if name is empty or none found.
+func (d *Daemon) findCompletedByName(name string) *model.DesiredState {
+	if name == "" {
+		return nil
+	}
+	desiredList, err := d.desiredStore.List()
+	if err != nil {
+		log.Printf("WARN: failed to list desired states for reactivation check: %v", err)
+		return nil
+	}
+	for _, ds := range desiredList {
+		if ds.Status == model.StatusCompleted && ds.Name == name {
+			return ds
+		}
+	}
+	return nil
+}
+
 // findCompletedByCommand scans the desired store for a completed schedule
 // with a matching command. Returns nil if none found.
 func (d *Daemon) findCompletedByCommand(command string) *model.DesiredState {
@@ -740,6 +767,127 @@ func (d *Daemon) findCompletedByCommand(command string) *model.DesiredState {
 		}
 	}
 	return nil
+}
+
+// refreshActiveSchedule updates an existing active (or paused) schedule in place.
+// It preserves the schedule's ID and status while updating trigger, command,
+// and runtime state. The per-schedule mutex serializes with any in-progress execution.
+func (d *Daemon) refreshActiveSchedule(
+	existing *activeSchedule,
+	trigCfg model.TriggerConfig,
+	trig model.Trigger,
+	p model.AddParams,
+) (*model.AddResult, *model.RPCError) {
+	// Acquire per-schedule lock to avoid racing with in-progress execution.
+	existing.mu.Lock()
+	defer existing.mu.Unlock()
+
+	id := existing.desired.ID
+	name := existing.desired.Name
+
+	// Check git preconditions.
+	if err := d.gitOps.CheckRepoPreconditions(); err != nil {
+		return nil, d.gitPreconditionError(err)
+	}
+
+	// Update desired state fields.
+	existing.desired.Trigger = trigCfg
+	existing.desired.Once = p.Once
+	existing.desired.CreatedAt = time.Now() // reset for poll timeout recalculation
+	if p.Command != "" {
+		existing.desired.Command = p.Command
+	}
+	if p.Name != "" {
+		existing.desired.Name = p.Name
+		name = p.Name
+	}
+	if p.UserRequest != "" {
+		existing.desired.UserRequest = p.UserRequest
+	}
+
+	if err := d.desiredStore.Write(existing.desired); err != nil {
+		return nil, &model.RPCError{
+			Code:    model.RPCErrCodeInternal,
+			Message: "failed to write updated desired state: " + err.Error(),
+		}
+	}
+
+	// Git commit.
+	filePath := d.desiredStore.FilePath(id)
+	relPath, _ := filepath.Rel(d.cfg.DataRepo, filePath)
+	commitMsg := fmt.Sprintf("sundial: refresh schedule %s (%s)", id, name)
+	if err := d.gitOps.CommitSchedule(filePath, commitMsg); err != nil {
+		return nil, d.gitPreconditionError(fmt.Errorf("git commit failed: %w", err))
+	}
+
+	// Reset runtime state with fresh countdown (preserve zero NextFireAt for paused).
+	var nextFire time.Time
+	if existing.desired.Status != model.StatusPaused {
+		nextFire = trig.NextFireTime(time.Now())
+	}
+	runtime := &model.RuntimeState{
+		ID:         id,
+		NextFireAt: nextFire,
+	}
+
+	var recovery, warning string
+	if err := d.runtimeStore.Write(runtime); err != nil {
+		log.Printf("WARN: runtime write failed for refreshed %s, triggering reconcile: %v", id, err)
+		recovery = "runtime state write failed; reconciliation triggered"
+		warning = err.Error()
+		go func() {
+			if err := d.reconcile(false); err != nil {
+				log.Printf("WARN: reconcile after runtime write failure: %v", err)
+			}
+		}()
+	}
+
+	// Git push (best-effort).
+	if err := d.gitOps.Push(); err != nil {
+		log.Printf("WARN: git push failed (will retry on reload): %v", err)
+		if warning == "" {
+			warning = "git push failed: " + err.Error()
+		}
+	}
+
+	// Update in-memory active schedule.
+	d.mu.Lock()
+	existing.runtime = runtime
+	existing.trigger = trig
+	d.mu.Unlock()
+	d.signalWake()
+
+	log.Printf("schedule %s (%s): refreshed (updated active schedule in place)", id, name)
+
+	// Format next fire time.
+	loc := time.Local
+	if trigCfg.Location != nil && trigCfg.Location.Timezone != "" {
+		if l, err := time.LoadLocation(trigCfg.Location.Timezone); err == nil {
+			loc = l
+		}
+	}
+
+	nextFireStr := ""
+	nextFireUTC := ""
+	if !nextFire.IsZero() {
+		nextFireStr = nextFire.In(loc).Format("Mon Jan 2 3:04 PM MST")
+		nextFireUTC = nextFire.UTC().Format(time.RFC3339)
+	}
+
+	result := &model.AddResult{
+		ID:          id,
+		Name:        name,
+		Schedule:    trig.HumanDescription(),
+		NextFire:    nextFireStr,
+		NextFireUTC: nextFireUTC,
+		Status:      "refreshed",
+		SavedTo:     relPath,
+		Committed:   commitMsg,
+		Recovery:    recovery,
+		Warning:     warning,
+	}
+
+	return result, nil
 }
 
 // reactivateSchedule resets a completed schedule back to active with updated
@@ -765,6 +913,9 @@ func (d *Daemon) reactivateSchedule(
 	if p.Name != "" {
 		completed.Name = p.Name
 		name = p.Name
+	}
+	if p.Command != "" && p.Command != completed.Command {
+		completed.Command = p.Command
 	}
 	if p.UserRequest != "" {
 		completed.UserRequest = p.UserRequest
