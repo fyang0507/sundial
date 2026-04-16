@@ -1,6 +1,6 @@
 # Sundial
 
-Agent-first CLI scheduler with cron and solar triggers. Go project targeting macOS.
+Agent-first CLI scheduler with cron, solar, and poll triggers. Go project targeting macOS.
 
 ## Build & Run
 
@@ -24,7 +24,7 @@ main.go              → cmd.Execute()
 cmd/                 → cobra commands (thin wiring layer)
 internal/
   model/             → all shared types, interfaces, errors (zero deps — everything imports this)
-  trigger/           → CronTrigger + SolarTrigger implementing model.Trigger
+  trigger/           → CronTrigger + SolarTrigger + PollTrigger implementing model.Trigger
   config/            → config.yaml loading, validation, path expansion
   store/             → file I/O: desired state (data repo), runtime state, run logs (local)
   gitops/            → git precondition checks, commit --only, push
@@ -40,6 +40,8 @@ internal/
 - **model/ is the contract layer**: all shared types live here. Downstream packages import model, never each other's types.
 - **Single-writer architecture**: daemon owns all schedule state mutation. CLI sends RPCs only.
 - **Two-store state model**: desired state in data repo (git-tracked), runtime state local.
+- **Three trigger types**: cron (static schedule), solar (sun-position-based), poll (condition-gated periodic check).
+- **Schedule lifecycle**: active → completed (via `--once`) or removed. Completed schedules auto-reactivate on matching `add`.
 - **Agent-first CLI**: non-interactive, --json flag, fail-fast with examples, --dry-run.
 
 ## Design Doc

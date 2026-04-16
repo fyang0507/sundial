@@ -1,5 +1,5 @@
 BINARY    := sundial
-PREFIX    := /usr/local/bin
+PREFIX    := $(shell go env GOPATH)/bin
 DATA_REPO := $(shell grep '^data_repo:' config.yaml 2>/dev/null | sed 's/data_repo: *"\([^"]*\)".*/\1/' | sed "s|~|$$HOME|")
 
 .PHONY: build install uninstall test vet clean

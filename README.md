@@ -1,10 +1,10 @@
 # Sundial
 
-A lightweight, agent-first CLI scheduler with cron and solar triggers for macOS.
+A lightweight, agent-first CLI scheduler with cron, solar, and poll triggers for macOS.
 
 ## What it does
 
-Sundial lets you schedule recurring shell commands using standard cron expressions or dynamic solar events (sunrise/sunset with offsets). It is designed for AI coding agents that need to schedule future invocations of themselves -- for example, "check my trash bins every Monday and Tuesday, one hour before sunset" -- but works equally well for any human who wants solar-aware scheduling without gluing together cron and heliocron.
+Sundial lets you schedule recurring shell commands using standard cron expressions, dynamic solar events (sunrise/sunset with offsets), or condition-gated poll triggers. It is designed for AI coding agents that need to schedule future invocations of themselves -- for example, "check my trash bins every Monday and Tuesday, one hour before sunset" or "notify me when a reply arrives" -- but works equally well for any human who wants solar-aware or event-driven scheduling.
 
 ## Quick start
 
@@ -34,7 +34,7 @@ sundial add --type cron --cron "0 9 * * 1-5" \
 
 | Command     | Description                                      |
 |-------------|--------------------------------------------------|
-| `add`       | Create a new cron or solar schedule              |
+| `add`       | Create a new cron, solar, or poll schedule       |
 | `list`      | List all active schedules                        |
 | `show <id>` | Show details of a specific schedule              |
 | `remove <id>` | Remove a schedule (or `--all --yes` for all)  |
@@ -77,6 +77,23 @@ Use `sundial geocode` to resolve a street address or city name into the `--lat`,
 ```bash
 sundial geocode "San Francisco, CA"
 ```
+
+### Poll
+
+Condition-gated periodic execution. The daemon runs a trigger command at a fixed interval; the main command fires only when the trigger exits 0. Useful for event-driven workflows where you're waiting for an external condition.
+
+```bash
+# Check every 2 minutes if a reply arrived, fire once when it does
+sundial add --type poll \
+  --trigger 'outreach reply-check --contact-id c_abc123 --channel sms' \
+  --interval 2m --once \
+  --command "cd ~/project && codex exec 'Reply from Dr. Smith. Continue campaign.'" \
+  --name "await reply from Dr. Smith"
+```
+
+The trigger command receives `SUNDIAL_SCHEDULE_ID` and `SUNDIAL_LAST_FIRED_AT` (ISO 8601 watermark) as environment variables so it can scope its check without sundial knowing the domain.
+
+`--once` means "fire the command once, then mark the schedule as completed." Without it, the poll trigger keeps running indefinitely -- check, fire, check, fire. Completed schedules auto-reactivate if `sundial add` is called again with the same command.
 
 ## Configuration
 
@@ -148,7 +165,7 @@ make clean               # remove local binary
 cmd/                 -- cobra commands (CLI wiring)
 internal/
   model/             -- shared types, interfaces, errors
-  trigger/           -- CronTrigger + SolarTrigger implementations
+  trigger/           -- CronTrigger + SolarTrigger + PollTrigger implementations
   config/            -- config.yaml loading and validation
   store/             -- file I/O for desired state and runtime state
   gitops/            -- git commit and push operations
@@ -175,6 +192,6 @@ sundial list
 
 ## Status
 
-**v1** -- macOS only, Codex-focused. Schedules arbitrary shell commands with cron and solar triggers.
+**v1** -- macOS only, Codex-focused. Schedules arbitrary shell commands with cron, solar, and poll triggers.
 
 See [docs/post-v1.md](docs/post-v1.md) for the roadmap, including multi-agent support, Linux compatibility, pause/unpause, and session resume.

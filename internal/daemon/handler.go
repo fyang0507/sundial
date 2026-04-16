@@ -68,11 +68,13 @@ func (d *Daemon) Handle(method string, params json.RawMessage) (interface{}, *mo
 func (d *Daemon) handleAdd(p model.AddParams) (*model.AddResult, *model.RPCError) {
 	// 1. Build TriggerConfig from params.
 	trigCfg := model.TriggerConfig{
-		Type:   p.Type,
-		Cron:   p.Cron,
-		Event:  p.Event,
-		Offset: p.Offset,
-		Days:   p.Days,
+		Type:           p.Type,
+		Cron:           p.Cron,
+		Event:          p.Event,
+		Offset:         p.Offset,
+		Days:           p.Days,
+		TriggerCommand: p.TriggerCommand,
+		Interval:       p.Interval,
 	}
 	if p.Lat != nil && p.Lon != nil {
 		tz := p.Timezone
@@ -95,7 +97,7 @@ func (d *Daemon) handleAdd(p model.AddParams) (*model.AddResult, *model.RPCError
 		}
 	}
 
-	// 3. Check duplicates.
+	// 3. Check duplicates against active schedules.
 	d.mu.RLock()
 	for _, sched := range d.schedules {
 		if !p.Force {
@@ -126,6 +128,11 @@ func (d *Daemon) handleAdd(p model.AddParams) (*model.AddResult, *model.RPCError
 	}
 	d.mu.RUnlock()
 
+	// 3b. Check for completed schedules with matching command — reactivate instead of creating new.
+	if completed := d.findCompletedByCommand(p.Command); completed != nil {
+		return d.reactivateSchedule(completed, trigCfg, trig, p)
+	}
+
 	// 4. Check git preconditions.
 	if err := d.gitOps.CheckRepoPreconditions(); err != nil {
 		return nil, &model.RPCError{
@@ -149,6 +156,7 @@ func (d *Daemon) handleAdd(p model.AddParams) (*model.AddResult, *model.RPCError
 		Trigger:     trigCfg,
 		Command:     p.Command,
 		Status:      model.StatusActive,
+		Once:        p.Once,
 	}
 
 	filePath := d.desiredStore.FilePath(id)
@@ -533,6 +541,126 @@ func (d *Daemon) handleHealth() (*model.HealthResult, *model.RPCError) {
 
 	// Overall healthy status.
 	result.Healthy = result.DaemonRunning && result.ConfigValid && result.DataRepoOK && result.DataRepoGitClean
+
+	return result, nil
+}
+
+// findCompletedByCommand scans the desired store for a completed schedule
+// with a matching command. Returns nil if none found.
+func (d *Daemon) findCompletedByCommand(command string) *model.DesiredState {
+	desiredList, err := d.desiredStore.List()
+	if err != nil {
+		log.Printf("WARN: failed to list desired states for reactivation check: %v", err)
+		return nil
+	}
+	for _, ds := range desiredList {
+		if ds.Status == model.StatusCompleted && ds.Command == command {
+			return ds
+		}
+	}
+	return nil
+}
+
+// reactivateSchedule resets a completed schedule back to active with updated
+// trigger config and runtime state.
+func (d *Daemon) reactivateSchedule(
+	completed *model.DesiredState,
+	trigCfg model.TriggerConfig,
+	trig model.Trigger,
+	p model.AddParams,
+) (*model.AddResult, *model.RPCError) {
+	id := completed.ID
+	name := completed.Name
+
+	// Check git preconditions.
+	if err := d.gitOps.CheckRepoPreconditions(); err != nil {
+		return nil, &model.RPCError{
+			Code:    model.RPCErrCodeGitPrecondition,
+			Message: err.Error(),
+		}
+	}
+
+	// Update desired state.
+	completed.Status = model.StatusActive
+	completed.Trigger = trigCfg
+	completed.Once = p.Once
+	if p.Name != "" {
+		completed.Name = p.Name
+		name = p.Name
+	}
+	if p.UserRequest != "" {
+		completed.UserRequest = p.UserRequest
+	}
+
+	if err := d.desiredStore.Write(completed); err != nil {
+		return nil, &model.RPCError{
+			Code:    model.RPCErrCodeInternal,
+			Message: "failed to write reactivated desired state: " + err.Error(),
+		}
+	}
+
+	// Git commit.
+	filePath := d.desiredStore.FilePath(id)
+	relPath, _ := filepath.Rel(d.cfg.DataRepo, filePath)
+	commitMsg := fmt.Sprintf("sundial: reactivate schedule %s (%s)", id, name)
+	if err := d.gitOps.CommitSchedule(filePath, commitMsg); err != nil {
+		return nil, &model.RPCError{
+			Code:    model.RPCErrCodeGitPrecondition,
+			Message: "git commit failed: " + err.Error(),
+		}
+	}
+
+	// Create fresh runtime state.
+	nextFire := trig.NextFireTime(time.Now())
+	runtime := &model.RuntimeState{
+		ID:         id,
+		NextFireAt: nextFire,
+	}
+
+	var recovery, warning string
+	if err := d.runtimeStore.Write(runtime); err != nil {
+		log.Printf("WARN: runtime write failed for reactivated %s, triggering reconcile: %v", id, err)
+		recovery = "runtime state write failed; reconciliation triggered"
+		warning = err.Error()
+		go func() {
+			if err := d.reconcile(false); err != nil {
+				log.Printf("WARN: reconcile after runtime write failure: %v", err)
+			}
+		}()
+	}
+
+	// Git push (best-effort).
+	if err := d.gitOps.Push(); err != nil {
+		log.Printf("WARN: git push failed (will retry on reload): %v", err)
+		if warning == "" {
+			warning = "git push failed: " + err.Error()
+		}
+	}
+
+	// Add to active schedules, signal wake.
+	d.mu.Lock()
+	d.schedules[id] = &activeSchedule{
+		desired: completed,
+		runtime: runtime,
+		trigger: trig,
+	}
+	d.mu.Unlock()
+	d.signalWake()
+
+	log.Printf("schedule %s (%s): reactivated from completed state", id, name)
+
+	result := &model.AddResult{
+		ID:          id,
+		Name:        name,
+		Schedule:    trig.HumanDescription(),
+		NextFire:    nextFire.Local().Format("Mon Jan 2 3:04 PM MST"),
+		NextFireUTC: nextFire.UTC().Format(time.RFC3339),
+		Status:      "reactivated",
+		SavedTo:     relPath,
+		Committed:   commitMsg,
+		Recovery:    recovery,
+		Warning:     warning,
+	}
 
 	return result, nil
 }

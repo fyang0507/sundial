@@ -1,8 +1,11 @@
 package daemon
 
 import (
+	"fmt"
 	"log"
 	"time"
+
+	"github.com/fyang0507/sundial/internal/model"
 )
 
 // runLoop is the main scheduler loop. It sleeps until the next fire time,
@@ -89,11 +92,18 @@ func (d *Daemon) fireDueSchedules() {
 			d.signalWake()
 		}()
 	}
+
 }
 
 // advanceSchedule recomputes the next fire time for a single schedule
-// and persists the updated runtime state.
+// and persists the updated runtime state. For --once schedules that have
+// already fired, it marks the schedule as completed.
 func (d *Daemon) advanceSchedule(sched *activeSchedule) {
+	if sched.desired.Once && sched.runtime.FireCount > 0 {
+		d.completeSchedule(sched)
+		return
+	}
+
 	next := sched.trigger.NextFireTime(time.Now())
 
 	d.mu.Lock()
@@ -104,4 +114,44 @@ func (d *Daemon) advanceSchedule(sched *activeSchedule) {
 		log.Printf("WARN: schedule %s: failed to persist runtime after fire: %v",
 			sched.desired.ID, err)
 	}
+}
+
+// completeSchedule marks a --once schedule as completed: updates desired state
+// in the data repo, git commits, deletes runtime state, and removes from
+// active schedules.
+func (d *Daemon) completeSchedule(sched *activeSchedule) {
+	id := sched.desired.ID
+	name := sched.desired.Name
+
+	log.Printf("schedule %s (%s): once schedule completed after %d fire(s)",
+		id, name, sched.runtime.FireCount)
+
+	// Update desired state to completed.
+	sched.desired.Status = model.StatusCompleted
+	if err := d.desiredStore.Write(sched.desired); err != nil {
+		log.Printf("WARN: schedule %s: failed to write completed state: %v", id, err)
+		return
+	}
+
+	// Git commit.
+	filePath := d.desiredStore.FilePath(id)
+	commitMsg := fmt.Sprintf("sundial: complete schedule %s (%s)", id, name)
+	if err := d.gitOps.CommitSchedule(filePath, commitMsg); err != nil {
+		log.Printf("WARN: schedule %s: failed to git commit completion: %v", id, err)
+	}
+
+	// Best-effort push.
+	if err := d.gitOps.Push(); err != nil {
+		log.Printf("WARN: schedule %s: git push failed after completion: %v", id, err)
+	}
+
+	// Delete runtime state.
+	if err := d.runtimeStore.Delete(id); err != nil {
+		log.Printf("WARN: schedule %s: failed to delete runtime state: %v", id, err)
+	}
+
+	// Remove from active schedules.
+	d.mu.Lock()
+	delete(d.schedules, id)
+	d.mu.Unlock()
 }

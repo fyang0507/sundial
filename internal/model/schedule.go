@@ -6,8 +6,9 @@ import "time"
 type ScheduleStatus string
 
 const (
-	StatusActive  ScheduleStatus = "active"
-	StatusRemoved ScheduleStatus = "removed"
+	StatusActive    ScheduleStatus = "active"
+	StatusCompleted ScheduleStatus = "completed"
+	StatusRemoved   ScheduleStatus = "removed"
 )
 
 // RunLogType represents the type of a run log entry.
@@ -30,6 +31,7 @@ type DesiredState struct {
 	Command           string         `json:"command"`
 	Status            ScheduleStatus `json:"status"`
 	RecreationCommand string         `json:"recreation_command,omitempty"`
+	Once              bool           `json:"once,omitempty"` // fire once then complete
 }
 
 // RuntimeState is machine-local scheduling data managed by the daemon.
@@ -40,6 +42,7 @@ type RuntimeState struct {
 	LastFiredAt  *time.Time `json:"last_fired_at,omitempty"`
 	LastExitCode *int       `json:"last_exit_code,omitempty"`
 	FireCount    int        `json:"fire_count"`
+	CheckCount   int        `json:"check_count,omitempty"` // poll trigger: number of condition checks run
 }
 
 // RunLogEntry is a single fire/miss record appended to the per-schedule JSONL log.

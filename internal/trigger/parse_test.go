@@ -2,6 +2,7 @@ package trigger
 
 import (
 	"testing"
+	"time"
 
 	"github.com/fyang0507/sundial/internal/model"
 )
@@ -108,6 +109,68 @@ func TestParseTrigger_SolarInvalidDay(t *testing.T) {
 	_, err := ParseTrigger(cfg)
 	if err == nil {
 		t.Fatal("Expected error for invalid day name")
+	}
+}
+
+func TestParseTrigger_Poll(t *testing.T) {
+	cfg := model.TriggerConfig{
+		Type:           model.TriggerTypePoll,
+		TriggerCommand: "check-condition",
+		Interval:       "2m",
+	}
+
+	trigger, err := ParseTrigger(cfg)
+	if err != nil {
+		t.Fatalf("ParseTrigger() error = %v", err)
+	}
+
+	pt, ok := trigger.(*PollTrigger)
+	if !ok {
+		t.Fatalf("Expected *PollTrigger, got %T", trigger)
+	}
+	if pt.TriggerCommand != "check-condition" {
+		t.Errorf("TriggerCommand = %q, want %q", pt.TriggerCommand, "check-condition")
+	}
+	if pt.Interval != 2*time.Minute {
+		t.Errorf("Interval = %v, want 2m", pt.Interval)
+	}
+}
+
+func TestParseTrigger_PollInvalidInterval(t *testing.T) {
+	cfg := model.TriggerConfig{
+		Type:           model.TriggerTypePoll,
+		TriggerCommand: "check-condition",
+		Interval:       "not-a-duration",
+	}
+
+	_, err := ParseTrigger(cfg)
+	if err == nil {
+		t.Fatal("Expected error for invalid interval")
+	}
+}
+
+func TestParseTrigger_PollIntervalTooShort(t *testing.T) {
+	cfg := model.TriggerConfig{
+		Type:           model.TriggerTypePoll,
+		TriggerCommand: "check-condition",
+		Interval:       "5s",
+	}
+
+	_, err := ParseTrigger(cfg)
+	if err == nil {
+		t.Fatal("Expected error for interval below minimum")
+	}
+}
+
+func TestParseTrigger_PollEmptyCommand(t *testing.T) {
+	cfg := model.TriggerConfig{
+		Type:     model.TriggerTypePoll,
+		Interval: "2m",
+	}
+
+	_, err := ParseTrigger(cfg)
+	if err == nil {
+		t.Fatal("Expected error for empty trigger command")
 	}
 }
 

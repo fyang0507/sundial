@@ -484,6 +484,334 @@ func TestAdvanceAllSchedules(t *testing.T) {
 	}
 }
 
+// makePollDesired creates a DesiredState with a poll trigger for testing.
+func makePollDesired(id, name, triggerCmd, interval string) *model.DesiredState {
+	return &model.DesiredState{
+		ID:        id,
+		Name:      name,
+		CreatedAt: time.Now(),
+		Trigger: model.TriggerConfig{
+			Type:           model.TriggerTypePoll,
+			TriggerCommand: triggerCmd,
+			Interval:       interval,
+		},
+		Command: "echo fired",
+		Status:  model.StatusActive,
+	}
+}
+
+func TestHandleMissedFires_PollSkipsMissHandling(t *testing.T) {
+	d := newTestDaemon(t)
+
+	desired := makePollDesired("sch_poll01", "poll-miss-test", "true", "2m")
+	if err := d.desiredStore.Write(desired); err != nil {
+		t.Fatal(err)
+	}
+
+	trig, err := trigger.ParseTrigger(desired.Trigger)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Set NextFireAt 5 minutes in the past (would normally log misses).
+	pastTime := time.Now().Add(-5 * time.Minute)
+	runtime := &model.RuntimeState{
+		ID:         "sch_poll01",
+		NextFireAt: pastTime,
+	}
+	if err := d.runtimeStore.Write(runtime); err != nil {
+		t.Fatal(err)
+	}
+
+	d.mu.Lock()
+	d.schedules["sch_poll01"] = &activeSchedule{
+		desired: desired,
+		runtime: runtime,
+		trigger: trig,
+	}
+	d.mu.Unlock()
+
+	d.handleMissedFires()
+
+	// Should NOT have fired (no LastFiredAt).
+	d.mu.RLock()
+	sched := d.schedules["sch_poll01"]
+	d.mu.RUnlock()
+
+	if sched.runtime.LastFiredAt != nil {
+		t.Error("poll trigger should not fire on missed checks")
+	}
+
+	// NextFireAt should have been advanced to the future.
+	if !sched.runtime.NextFireAt.After(time.Now()) {
+		t.Errorf("expected NextFireAt to be in the future, got %v", sched.runtime.NextFireAt)
+	}
+
+	// Should NOT have miss log entries.
+	entries, err := d.runLogStore.Read("sch_poll01")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("expected no miss log entries for poll trigger, got %d", len(entries))
+	}
+}
+
+func TestReconcile_PollTrigger(t *testing.T) {
+	d := newTestDaemon(t)
+
+	desired := makePollDesired("sch_poll02", "poll-reconcile", "check-cmd", "2m")
+	if err := d.desiredStore.Write(desired); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := d.reconcile(false); err != nil {
+		t.Fatal(err)
+	}
+
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	sched, ok := d.schedules["sch_poll02"]
+	if !ok {
+		t.Fatal("expected poll schedule to be active after reconcile")
+	}
+
+	if sched.runtime.NextFireAt.IsZero() {
+		t.Error("expected NextFireAt to be set for poll trigger")
+	}
+
+	if !sched.runtime.NextFireAt.After(time.Now()) {
+		t.Errorf("expected NextFireAt in the future, got %v", sched.runtime.NextFireAt)
+	}
+}
+
+func TestAdvanceSchedule_Once(t *testing.T) {
+	d := newTestDaemon(t)
+
+	desired := makeCronDesired("sch_once01", "once-test", "0 9 * * *")
+	desired.Once = true
+	if err := d.desiredStore.Write(desired); err != nil {
+		t.Fatal(err)
+	}
+
+	trig, err := trigger.ParseTrigger(desired.Trigger)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	runtime := &model.RuntimeState{
+		ID:         "sch_once01",
+		NextFireAt: time.Now().Add(time.Hour),
+		FireCount:  1, // already fired once
+	}
+	if err := d.runtimeStore.Write(runtime); err != nil {
+		t.Fatal(err)
+	}
+
+	sched := &activeSchedule{
+		desired: desired,
+		runtime: runtime,
+		trigger: trig,
+	}
+
+	d.mu.Lock()
+	d.schedules["sch_once01"] = sched
+	d.mu.Unlock()
+
+	d.advanceSchedule(sched)
+
+	// Schedule should be removed from active map.
+	d.mu.RLock()
+	_, ok := d.schedules["sch_once01"]
+	d.mu.RUnlock()
+	if ok {
+		t.Error("expected completed once schedule to be removed from active schedules")
+	}
+
+	// Desired state should be "completed".
+	ds, err := d.desiredStore.Read("sch_once01")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ds.Status != model.StatusCompleted {
+		t.Errorf("expected desired status 'completed', got %q", ds.Status)
+	}
+}
+
+func TestAdvanceSchedule_OnceCompletesDesiredState(t *testing.T) {
+	d := newTestDaemon(t)
+
+	desired := makePollDesired("sch_once_c01", "once-complete", "exit 0", "2m")
+	desired.Once = true
+	if err := d.desiredStore.Write(desired); err != nil {
+		t.Fatal(err)
+	}
+
+	trig, err := trigger.ParseTrigger(desired.Trigger)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Now()
+	runtime := &model.RuntimeState{
+		ID:         "sch_once_c01",
+		NextFireAt: time.Now().Add(time.Hour),
+		FireCount:  1,
+		LastFiredAt: &now,
+	}
+	if err := d.runtimeStore.Write(runtime); err != nil {
+		t.Fatal(err)
+	}
+
+	sched := &activeSchedule{
+		desired: desired,
+		runtime: runtime,
+		trigger: trig,
+	}
+
+	d.mu.Lock()
+	d.schedules["sch_once_c01"] = sched
+	d.mu.Unlock()
+
+	d.advanceSchedule(sched)
+
+	// Desired state should be updated to "completed".
+	ds, err := d.desiredStore.Read("sch_once_c01")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ds.Status != model.StatusCompleted {
+		t.Errorf("expected desired status 'completed', got %q", ds.Status)
+	}
+
+	// Runtime state should have been deleted.
+	_, err = d.runtimeStore.Read("sch_once_c01")
+	if err == nil {
+		t.Error("expected runtime state to be deleted after completion")
+	}
+
+	// Schedule should be removed from active map.
+	d.mu.RLock()
+	_, ok := d.schedules["sch_once_c01"]
+	d.mu.RUnlock()
+	if ok {
+		t.Error("expected completed schedule to be removed from active schedules")
+	}
+}
+
+func TestAdvanceSchedule_OnceNotYetFired(t *testing.T) {
+	d := newTestDaemon(t)
+
+	desired := makeCronDesired("sch_once02", "once-pending", "0 9 * * *")
+	desired.Once = true
+	trig, err := trigger.ParseTrigger(desired.Trigger)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	runtime := &model.RuntimeState{
+		ID:         "sch_once02",
+		NextFireAt: time.Now().Add(time.Hour),
+		FireCount:  0, // not fired yet
+	}
+	if err := d.runtimeStore.Write(runtime); err != nil {
+		t.Fatal(err)
+	}
+
+	sched := &activeSchedule{
+		desired: desired,
+		runtime: runtime,
+		trigger: trig,
+	}
+
+	d.mu.Lock()
+	d.schedules["sch_once02"] = sched
+	d.mu.Unlock()
+
+	d.advanceSchedule(sched)
+
+	// NextFireAt should still be set (schedule hasn't fired yet).
+	if sched.runtime.NextFireAt.IsZero() {
+		t.Error("expected NextFireAt to be set for once schedule that hasn't fired yet")
+	}
+}
+
+func TestReconcile_CompletedWithRuntime(t *testing.T) {
+	d := newTestDaemon(t)
+
+	// Write a "completed" desired state.
+	desired := makeCronDesired("sch_comp01", "test-completed", "0 11 * * *")
+	desired.Status = model.StatusCompleted
+	if err := d.desiredStore.Write(desired); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write runtime state for it.
+	runtime := &model.RuntimeState{
+		ID:         "sch_comp01",
+		NextFireAt: time.Now().Add(time.Hour),
+	}
+	if err := d.runtimeStore.Write(runtime); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := d.reconcile(false); err != nil {
+		t.Fatal(err)
+	}
+
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	if _, ok := d.schedules["sch_comp01"]; ok {
+		t.Error("expected completed schedule to not be in active schedules")
+	}
+
+	// Runtime state should have been deleted.
+	_, err := d.runtimeStore.Read("sch_comp01")
+	if err == nil {
+		t.Error("expected runtime state to be deleted for completed schedule")
+	}
+}
+
+func TestFindCompletedByCommand(t *testing.T) {
+	d := newTestDaemon(t)
+
+	// Write a completed desired state.
+	desired := makePollDesired("sch_find01", "find-test", "check-cmd", "2m")
+	desired.Status = model.StatusCompleted
+	desired.Command = "echo fire"
+	if err := d.desiredStore.Write(desired); err != nil {
+		t.Fatal(err)
+	}
+
+	// Should find it.
+	found := d.findCompletedByCommand("echo fire")
+	if found == nil {
+		t.Fatal("expected to find completed schedule")
+	}
+	if found.ID != "sch_find01" {
+		t.Errorf("expected ID sch_find01, got %s", found.ID)
+	}
+
+	// Should not find for different command.
+	notFound := d.findCompletedByCommand("echo other")
+	if notFound != nil {
+		t.Error("expected no match for different command")
+	}
+
+	// Should not find active schedules.
+	active := makeCronDesired("sch_find02", "active-one", "0 9 * * *")
+	active.Command = "echo active"
+	if err := d.desiredStore.Write(active); err != nil {
+		t.Fatal(err)
+	}
+	notFound = d.findCompletedByCommand("echo active")
+	if notFound != nil {
+		t.Error("expected no match for active schedule")
+	}
+}
+
 // Ensure the schedules dir exists before running any file-based test.
 func init() {
 	// Temp dirs handle this in each test, nothing needed globally.

@@ -79,8 +79,8 @@ func (d *Daemon) reconcile(isStartup bool) error {
 			}
 			activeIDs[id] = struct{}{}
 
-		case model.StatusRemoved:
-			// Removed desired + runtime exists -> delete runtime.
+		case model.StatusCompleted, model.StatusRemoved:
+			// Completed or removed desired + runtime exists -> delete runtime.
 			if rs != nil {
 				if err := d.runtimeStore.Delete(id); err != nil {
 					log.Printf("WARN: schedule %s: failed to delete runtime state: %v", id, err)
@@ -123,6 +123,18 @@ func (d *Daemon) handleMissedFires() {
 	for id, sched := range d.schedules {
 		nextFire := sched.runtime.NextFireAt
 		if nextFire.IsZero() || !nextFire.Before(now) {
+			continue
+		}
+
+		// Poll triggers: missed checks are meaningless — the condition may or
+		// may not still hold. Just advance to the next interval.
+		if sched.desired.Trigger.Type == model.TriggerTypePoll {
+			sched.runtime.NextFireAt = sched.trigger.NextFireTime(now)
+			if err := d.runtimeStore.Write(sched.runtime); err != nil {
+				log.Printf("WARN: schedule %s: failed to persist runtime after poll advance: %v", id, err)
+			}
+			log.Printf("schedule %s (%s): poll trigger advanced past missed checks",
+				id, sched.desired.Name)
 			continue
 		}
 

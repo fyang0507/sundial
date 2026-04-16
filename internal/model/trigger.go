@@ -14,6 +14,7 @@ type TriggerType string
 const (
 	TriggerTypeCron  TriggerType = "cron"
 	TriggerTypeSolar TriggerType = "solar"
+	TriggerTypePoll  TriggerType = "poll"
 )
 
 // SolarEvent identifies which solar event to anchor to.
@@ -32,14 +33,17 @@ type Location struct {
 }
 
 // TriggerConfig is the JSON-serializable trigger definition stored in desired state.
-// Exactly one of Cron or (Event+Days+Location) should be populated depending on Type.
+// Exactly one of Cron or (Event+Days+Location) or (TriggerCommand+Interval) should be
+// populated depending on Type.
 type TriggerConfig struct {
-	Type     TriggerType `json:"type"`
-	Cron     string      `json:"cron,omitempty"`
-	Event    SolarEvent  `json:"event,omitempty"`
-	Offset   string      `json:"offset,omitempty"` // ISO 8601 duration, e.g. "-PT1H"
-	Days     []string    `json:"days,omitempty"`    // e.g. ["monday","tuesday"]
-	Location *Location   `json:"location,omitempty"`
+	Type           TriggerType `json:"type"`
+	Cron           string      `json:"cron,omitempty"`
+	Event          SolarEvent  `json:"event,omitempty"`
+	Offset         string      `json:"offset,omitempty"`          // ISO 8601 duration, e.g. "-PT1H"
+	Days           []string    `json:"days,omitempty"`             // e.g. ["monday","tuesday"]
+	Location       *Location   `json:"location,omitempty"`
+	TriggerCommand string      `json:"trigger_command,omitempty"` // condition check command (poll)
+	Interval       string      `json:"interval,omitempty"`        // Go duration, e.g. "2m" (poll)
 }
 
 // Trigger is the runtime interface for computing fire times.

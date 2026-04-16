@@ -1,17 +1,17 @@
 ---
 name: sundial
-description: Scheduler service for agent. Cron and solar triggers.
+description: Scheduler service for agent. Cron, solar, and poll triggers.
 ---
 
 # Sundial
 
-CLI scheduler with cron and solar triggers. A background daemon manages all schedules over IPC. All commands accept `--json`.
+CLI scheduler with cron, solar, and poll triggers. A background daemon manages all schedules over IPC. All commands accept `--json`.
 
 ## Commands
 
 | Action | Command |
 |---|---|
-| Create schedule | `sundial add --type cron\|solar ...` |
+| Create schedule | `sundial add --type cron\|solar\|poll ...` |
 | List schedules | `sundial list` |
 | Show details | `sundial show <id>` |
 | Remove schedule | `sundial remove <id>` |
@@ -48,10 +48,29 @@ Optional `--offset`: human (`-1h`, `+30m`) or ISO 8601 (`-PT1H`, `PT30M`).
 
 Use `sundial geocode "<address>" --json` to resolve an address into `lat`, `lon`, and `timezone`.
 
+### Poll
+
+Condition-gated periodic check. Runs a trigger command at a fixed interval; the main command fires only when the trigger exits 0.
+
+```bash
+sundial add --type poll \
+  --trigger 'your-check-command --since "$SUNDIAL_LAST_FIRED_AT"' \
+  --interval 2m --once \
+  --command "cd ~/project && your-command-here" \
+  --name "wait for condition"
+```
+
+Required flags: `--trigger` (condition command), `--interval` (check frequency, min 30s).
+
+The trigger command receives `SUNDIAL_SCHEDULE_ID` and `SUNDIAL_LAST_FIRED_AT` env vars.
+
+`--once` fires the command once then completes the schedule. Without it, the poll runs indefinitely. Completed schedules auto-reactivate if `sundial add` is called again with the same command.
+
 ### Shared Flags
 
 - `--name` — human-readable label
 - `--user-request` — store the original user request (always pass this)
+- `--once` — fire once then complete the schedule
 - `--dry-run` — validate and preview without creating
 - `--force` — skip duplicate detection
 
@@ -69,7 +88,7 @@ Always `--dry-run` first when building a schedule from natural language.
 After every `add` or `remove`, the daemon automatically commits the change to the data repo and pushes to the remote. You do not need to run any git commands.
 
 - Each schedule is a JSON file at `sundial/schedules/sch_<id>.json` in this repo.
-- Removal sets `status: "removed"` in the file rather than deleting it.
+- Removal sets `status: "removed"` in the file rather than deleting it. `--once` schedules get `status: "completed"` after firing.
 - Push is best-effort; `sundial health --json` reports `pending_pushes` if any failed.
 - `sundial reload` retries pending pushes.
 

@@ -15,6 +15,8 @@ func ParseTrigger(cfg model.TriggerConfig) (model.Trigger, error) {
 		return parseCronTrigger(cfg)
 	case model.TriggerTypeSolar:
 		return parseSolarTrigger(cfg)
+	case model.TriggerTypePoll:
+		return parsePollTrigger(cfg)
 	default:
 		return nil, fmt.Errorf("unknown trigger type %q", cfg.Type)
 	}
@@ -23,6 +25,22 @@ func ParseTrigger(cfg model.TriggerConfig) (model.Trigger, error) {
 func parseCronTrigger(cfg model.TriggerConfig) (*CronTrigger, error) {
 	t := &CronTrigger{
 		Expr: cfg.Cron,
+	}
+	if err := t.Validate(); err != nil {
+		return nil, err
+	}
+	return t, nil
+}
+
+func parsePollTrigger(cfg model.TriggerConfig) (*PollTrigger, error) {
+	interval, err := time.ParseDuration(cfg.Interval)
+	if err != nil {
+		return nil, fmt.Errorf("invalid interval %q: %w", cfg.Interval, err)
+	}
+
+	t := &PollTrigger{
+		TriggerCommand: cfg.TriggerCommand,
+		Interval:       interval,
 	}
 	if err := t.Validate(); err != nil {
 		return nil, err
