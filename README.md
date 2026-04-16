@@ -110,6 +110,19 @@ sundial add --type poll \
 
 `--refresh` updates the existing schedule in place (same ID, fresh timeout countdown) if a schedule with the same `--name` already exists. If no match exists, it creates a new one.
 
+### Fire-and-forget with `--detach`
+
+By default sundial waits for the command to exit so it can record the exit code. For long-running commands -- especially callbacks that re-enter sundial (e.g. a poll callback that calls `sundial add --refresh` to re-arm itself) -- the wait becomes a problem: the per-schedule mutex is held for the full command duration, and any nested refresh is rejected as "schedule currently firing."
+
+```bash
+sundial add --type poll \
+  --trigger 'check-reply' --interval 2m --timeout 72h --once \
+  --command 'long-running-callback ...' \
+  --name 'outreach-watch' --detach
+```
+
+With `--detach`, sundial spawns the command via `exec.Start()` with its own session (so it survives daemon restarts) and returns immediately. Trade-offs: no `exit_code` or `duration_s` is captured, `sundial show` renders `last_fire: … (detached)`, and the child process is unsupervised once spawned. Use it only when the command logs its own outcome elsewhere or you don't need sundial-side visibility into the result.
+
 ## Configuration
 
 Place `config.yaml` in the project root alongside the sundial binary (or set `SUNDIAL_CONFIG` / pass `--config`). The only required field is `data_repo` -- everything else has sensible defaults.
@@ -163,6 +176,7 @@ Key agent-friendly features:
 - Consistent exit codes (0 = success, 1 = error)
 - Fuzzy duplicate detection catches near-duplicate names (Levenshtein) and commands (substring) with `--force` override
 - `--refresh` for atomic in-place updates to active schedules (upsert by name)
+- `--detach` for fire-and-forget commands that shouldn't block the firing window (required for callbacks that re-enter sundial)
 
 Design follows the [CLI-for-Agents](https://github.com/cursor/plugins/blob/main/cli-for-agent/skills/cli-for-agents/SKILL.md) principles.
 
