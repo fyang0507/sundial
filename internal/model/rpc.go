@@ -2,6 +2,7 @@ package model
 
 import (
 	"encoding/json"
+	"fmt"
 	"time"
 )
 
@@ -32,10 +33,16 @@ type RPCResponse struct {
 }
 
 // RPCError represents a structured error in an RPC response.
+// It implements the error interface so it can be returned directly from
+// Client.Call and inspected via errors.As by callers that need the code or data.
 type RPCError struct {
 	Code    int             `json:"code"`
 	Message string          `json:"message"`
 	Data    json.RawMessage `json:"data,omitempty"`
+}
+
+func (e *RPCError) Error() string {
+	return fmt.Sprintf("rpc error %d: %s", e.Code, e.Message)
 }
 
 // --- Per-method param and result types ---

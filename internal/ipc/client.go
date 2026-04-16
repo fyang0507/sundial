@@ -59,7 +59,7 @@ func (c *Client) Call(method string, params interface{}, result interface{}) err
 	}
 
 	if resp.Error != nil {
-		return fmt.Errorf("rpc error %d: %s", resp.Error.Code, resp.Error.Message)
+		return resp.Error
 	}
 
 	if result != nil && resp.Result != nil {
