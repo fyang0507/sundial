@@ -812,6 +812,128 @@ func TestFindCompletedByCommand(t *testing.T) {
 	}
 }
 
+func TestReconcile_PausedNoRuntime(t *testing.T) {
+	d := newTestDaemon(t)
+
+	// Write a paused desired state with no runtime.
+	desired := makeCronDesired("sch_pause01", "test-paused", "0 9 * * *")
+	desired.Status = model.StatusPaused
+	if err := d.desiredStore.Write(desired); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := d.reconcile(false); err != nil {
+		t.Fatal(err)
+	}
+
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	sched, ok := d.schedules["sch_pause01"]
+	if !ok {
+		t.Fatal("expected paused schedule to be in active schedules map (for list/show)")
+	}
+
+	if sched.desired.Status != model.StatusPaused {
+		t.Errorf("expected status 'paused', got %q", sched.desired.Status)
+	}
+
+	// NextFireAt should be zero (paused schedules don't fire).
+	if !sched.runtime.NextFireAt.IsZero() {
+		t.Errorf("expected zero NextFireAt for paused schedule, got %v", sched.runtime.NextFireAt)
+	}
+}
+
+func TestReconcile_PausedWithRuntime(t *testing.T) {
+	d := newTestDaemon(t)
+
+	// Write a paused desired state with stale runtime.
+	desired := makeCronDesired("sch_pause02", "test-paused-rt", "0 9 * * *")
+	desired.Status = model.StatusPaused
+	if err := d.desiredStore.Write(desired); err != nil {
+		t.Fatal(err)
+	}
+
+	runtime := &model.RuntimeState{
+		ID:         "sch_pause02",
+		NextFireAt: time.Now().Add(time.Hour), // stale non-zero value
+		FireCount:  3,
+	}
+	if err := d.runtimeStore.Write(runtime); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := d.reconcile(false); err != nil {
+		t.Fatal(err)
+	}
+
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	sched, ok := d.schedules["sch_pause02"]
+	if !ok {
+		t.Fatal("expected paused schedule to be in active schedules map")
+	}
+
+	// NextFireAt should be zeroed out during reconciliation.
+	if !sched.runtime.NextFireAt.IsZero() {
+		t.Errorf("expected zero NextFireAt for paused schedule, got %v", sched.runtime.NextFireAt)
+	}
+
+	// FireCount should be preserved.
+	if sched.runtime.FireCount != 3 {
+		t.Errorf("expected FireCount=3, got %d", sched.runtime.FireCount)
+	}
+}
+
+func TestReconcile_MixedWithPaused(t *testing.T) {
+	d := newTestDaemon(t)
+
+	d1 := makeCronDesired("sch_mx01", "active-sched", "0 8 * * *")
+	d2 := makeCronDesired("sch_mx02", "paused-sched", "0 9 * * *")
+	d2.Status = model.StatusPaused
+	d3 := makeCronDesired("sch_mx03", "removed-sched", "0 10 * * *")
+	d3.Status = model.StatusRemoved
+
+	for _, ds := range []*model.DesiredState{d1, d2, d3} {
+		if err := d.desiredStore.Write(ds); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := d.reconcile(false); err != nil {
+		t.Fatal(err)
+	}
+
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	// Should have 2 schedules: active + paused.
+	if len(d.schedules) != 2 {
+		t.Errorf("expected 2 schedules (active + paused), got %d", len(d.schedules))
+	}
+
+	if _, ok := d.schedules["sch_mx01"]; !ok {
+		t.Error("expected active schedule to be present")
+	}
+	if _, ok := d.schedules["sch_mx02"]; !ok {
+		t.Error("expected paused schedule to be present")
+	}
+	if _, ok := d.schedules["sch_mx03"]; ok {
+		t.Error("expected removed schedule to NOT be present")
+	}
+
+	// Active should have non-zero NextFireAt.
+	if d.schedules["sch_mx01"].runtime.NextFireAt.IsZero() {
+		t.Error("expected active schedule to have non-zero NextFireAt")
+	}
+
+	// Paused should have zero NextFireAt.
+	if !d.schedules["sch_mx02"].runtime.NextFireAt.IsZero() {
+		t.Error("expected paused schedule to have zero NextFireAt")
+	}
+}
+
 // Ensure the schedules dir exists before running any file-based test.
 func init() {
 	// Temp dirs handle this in each test, nothing needed globally.

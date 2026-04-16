@@ -53,6 +53,24 @@ func FormatRemoveResult(r *model.RemoveResult, jsonMode bool) string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
+// FormatPauseResult formats a PauseResult for display.
+func FormatPauseResult(r *model.PauseResult, jsonMode bool) string {
+	if jsonMode {
+		return mustMarshal(r)
+	}
+	var b strings.Builder
+	kv(&b, "id", r.ID)
+	kv(&b, "name", r.Name)
+	kv(&b, "status", r.Status)
+	if r.NextFire != "" {
+		kv(&b, "next_fire", r.NextFire)
+	}
+	if r.Warning != "" {
+		kv(&b, "warning", r.Warning)
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
 // FormatListResult formats a ListResult as a tabular table for plain text or
 // compact JSON. An empty schedule list produces "No schedules found."
 func FormatListResult(r *model.ListResult, jsonMode bool) string {

@@ -31,6 +31,7 @@ internal/
   geocode/           → Nominatim geocoding + timezone from coordinates
   ipc/               → JSON-RPC protocol, Unix socket client + server
   daemon/            → daemon lifecycle, scheduler run loop, reconciliation, execution, RPC handlers
+  similarity/        → fuzzy string matching (Levenshtein, substring) for duplicate detection
   launchd/           → plist generation, launchd install/uninstall
   format/            → output formatting (plain text + JSON)
 ```
@@ -41,7 +42,8 @@ internal/
 - **Single-writer architecture**: daemon owns all schedule state mutation. CLI sends RPCs only.
 - **Two-store state model**: desired state in data repo (git-tracked), runtime state local.
 - **Three trigger types**: cron (static schedule), solar (sun-position-based), poll (condition-gated periodic check).
-- **Schedule lifecycle**: active → completed (via `--once`) or removed. Completed schedules auto-reactivate on matching `add`.
+- **Schedule lifecycle**: active → paused (via `pause`) → active (via `unpause`); active → completed (via `--once`) or removed. Completed schedules auto-reactivate on matching `add`.
+- **Fuzzy duplicate detection**: `sundial add` checks exact name/command matches first, then fuzzy (Levenshtein for names, substring for commands). `--force` bypasses both.
 - **Agent-first CLI**: non-interactive, --json flag, fail-fast with examples, --dry-run.
 
 ## Design Doc

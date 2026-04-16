@@ -38,6 +38,8 @@ sundial add --type cron --cron "0 9 * * 1-5" \
 | `list`      | List all active schedules                        |
 | `show <id>` | Show details of a specific schedule              |
 | `remove <id>` | Remove a schedule (or `--all --yes` for all)  |
+| `pause <id>` | Pause a schedule (stops firing, stays visible)   |
+| `unpause <id>` | Resume a paused schedule                       |
 | `health`    | Check daemon, config, and data repo health       |
 | `geocode <address>` | Look up lat/lon/timezone for an address  |
 | `reload`    | Reload daemon config and reconcile schedules     |
@@ -146,6 +148,7 @@ Key agent-friendly features:
 - `--help` with inline examples on every command
 - Non-interactive -- no prompts, fail-fast with actionable error messages
 - Consistent exit codes (0 = success, 1 = error)
+- Fuzzy duplicate detection catches near-duplicate names (Levenshtein) and commands (substring) with `--force` override
 
 Design follows the [CLI-for-Agents](https://github.com/cursor/plugins/blob/main/cli-for-agent/skills/cli-for-agents/SKILL.md) principles.
 
@@ -172,6 +175,7 @@ internal/
   geocode/           -- Nominatim geocoding + timezone lookup
   ipc/               -- JSON-RPC protocol, Unix socket client/server
   daemon/            -- scheduler run loop, reconciliation, execution
+  similarity/        -- fuzzy string matching for duplicate detection
   launchd/           -- plist generation, install/uninstall
   format/            -- output formatting (plain text + JSON)
 ```
@@ -194,4 +198,4 @@ sundial list
 
 **v1** -- macOS only, Codex-focused. Schedules arbitrary shell commands with cron, solar, and poll triggers.
 
-See [docs/post-v1.md](docs/post-v1.md) for the roadmap, including multi-agent support, Linux compatibility, pause/unpause, and session resume.
+See [docs/post-v1.md](docs/post-v1.md) for the roadmap, including multi-agent support, Linux compatibility, and session resume.

@@ -7,12 +7,14 @@ import (
 
 // RPC method names.
 const (
-	MethodAdd    = "add"
-	MethodRemove = "remove"
-	MethodList   = "list"
-	MethodShow   = "show"
-	MethodReload = "reload"
-	MethodHealth = "health"
+	MethodAdd     = "add"
+	MethodRemove  = "remove"
+	MethodPause   = "pause"
+	MethodUnpause = "unpause"
+	MethodList    = "list"
+	MethodShow    = "show"
+	MethodReload  = "reload"
+	MethodHealth  = "health"
 )
 
 // RPCRequest is the envelope for CLI → daemon requests over the Unix socket.
@@ -82,6 +84,21 @@ type RemoveResult struct {
 	ID        string `json:"id,omitempty"`
 	Removed   int    `json:"removed"` // count of schedules removed (for --all)
 	Committed string `json:"committed,omitempty"`
+	Warning   string `json:"warning,omitempty"`
+}
+
+// PauseParams are the parameters for the "pause" RPC method.
+type PauseParams struct {
+	ID string `json:"id"`
+}
+
+// PauseResult is returned by a successful "pause" or "unpause" RPC.
+type PauseResult struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Status    string `json:"status"`
+	NextFire  string `json:"next_fire,omitempty"`
+	Committed string `json:"committed"`
 	Warning   string `json:"warning,omitempty"`
 }
 

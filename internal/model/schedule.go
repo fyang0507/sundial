@@ -7,6 +7,7 @@ type ScheduleStatus string
 
 const (
 	StatusActive    ScheduleStatus = "active"
+	StatusPaused    ScheduleStatus = "paused"
 	StatusCompleted ScheduleStatus = "completed"
 	StatusRemoved   ScheduleStatus = "removed"
 )
