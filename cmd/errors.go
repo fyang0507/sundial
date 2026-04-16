@@ -75,13 +75,13 @@ func handleClientError(err error) {
 		if jsonOutput {
 			m := map[string]string{
 				"error": "config not found",
-				"hint":  `run "sundial install" to create a default config, or create ~/.config/sundial/config.yaml manually`,
+				"hint":  `create a config.yaml (see config.yaml.example for template). Supported locations: next to the sundial binary, ~/.config/sundial/config.yaml, or set $SUNDIAL_CONFIG`,
 			}
 			data, _ := json.Marshal(m)
 			fmt.Println(string(data))
 		} else {
 			fmt.Println("Error: config not found")
-			fmt.Println(`  hint: run "sundial install" to create a default config, or create ~/.config/sundial/config.yaml manually`)
+			fmt.Println("  hint: create a config.yaml (see config.yaml.example for template). Supported locations: next to the sundial binary, ~/.config/sundial/config.yaml, or set $SUNDIAL_CONFIG")
 		}
 		os.Exit(1)
 	}
