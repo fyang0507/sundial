@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"os"
 	"time"
 
 	"github.com/fyang0507/sundial/internal/model"
@@ -25,13 +26,14 @@ func NewClient(socketPath string) *Client {
 }
 
 // Call sends an RPC request and decodes the response into result.
-// If the daemon is unreachable, it returns model.ErrDaemonUnreachable.
+// If the daemon is unreachable, it returns a *model.DaemonUnreachableError
+// (which wraps model.ErrDaemonUnreachable for errors.Is compatibility).
 // If the response carries an RPCError, a Go error wrapping its message is returned.
 // result may be nil if the caller does not need the response payload.
 func (c *Client) Call(method string, params interface{}, result interface{}) error {
 	conn, err := net.DialTimeout("unix", c.socketPath, 5*time.Second)
 	if err != nil {
-		return model.ErrDaemonUnreachable
+		return c.unreachableError()
 	}
 	defer conn.Close()
 
@@ -72,12 +74,25 @@ func (c *Client) Call(method string, params interface{}, result interface{}) err
 }
 
 // Ping checks whether the daemon is reachable by dialing and immediately
-// closing the socket. Returns model.ErrDaemonUnreachable on failure.
+// closing the socket. Returns *model.DaemonUnreachableError on failure.
 func (c *Client) Ping() error {
 	conn, err := net.DialTimeout("unix", c.socketPath, 5*time.Second)
 	if err != nil {
-		return model.ErrDaemonUnreachable
+		return c.unreachableError()
 	}
 	conn.Close()
 	return nil
+}
+
+// unreachableError returns a structured DaemonUnreachableError that distinguishes
+// socket-not-found from connection-refused.
+func (c *Client) unreachableError() *model.DaemonUnreachableError {
+	reason := "connection_refused"
+	if _, err := os.Stat(c.socketPath); os.IsNotExist(err) {
+		reason = "socket_not_found"
+	}
+	return &model.DaemonUnreachableError{
+		SocketPath:    c.socketPath,
+		FailureReason: reason,
+	}
 }

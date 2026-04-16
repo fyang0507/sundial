@@ -30,14 +30,12 @@ func runPause(cmd *cobra.Command, args []string) {
 
 	client, err := getClient()
 	if err != nil {
-		fmt.Println(format.FormatError(err.Error(), jsonOutput))
-		os.Exit(1)
+		handleClientError(err)
 	}
 
 	var result model.PauseResult
 	if err := client.Call(model.MethodPause, params, &result); err != nil {
-		fmt.Println(format.FormatError(err.Error(), jsonOutput))
-		os.Exit(1)
+		handleCallError(err)
 	}
 
 	fmt.Println(format.FormatPauseResult(&result, jsonOutput))

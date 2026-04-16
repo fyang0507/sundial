@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"fmt"
-	"os"
 
 	"github.com/fyang0507/sundial/internal/format"
 	"github.com/fyang0507/sundial/internal/model"
@@ -28,14 +27,12 @@ func runShow(cmd *cobra.Command, args []string) {
 
 	client, err := getClient()
 	if err != nil {
-		fmt.Println(format.FormatError(err.Error(), jsonOutput))
-		os.Exit(1)
+		handleClientError(err)
 	}
 
 	var result model.ShowResult
 	if err := client.Call(model.MethodShow, params, &result); err != nil {
-		fmt.Println(format.FormatError(err.Error(), jsonOutput))
-		os.Exit(1)
+		handleCallError(err)
 	}
 
 	fmt.Println(format.FormatShowResult(&result, jsonOutput))

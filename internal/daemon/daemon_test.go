@@ -113,6 +113,49 @@ func TestHandleShow_NotFound(t *testing.T) {
 	if rpcErr.Code != model.RPCErrCodeNotFound {
 		t.Errorf("expected error code %d, got %d", model.RPCErrCodeNotFound, rpcErr.Code)
 	}
+
+	// Verify structured NotFoundInfo in error data.
+	var info model.NotFoundInfo
+	if err := json.Unmarshal(rpcErr.Data, &info); err != nil {
+		t.Fatalf("failed to unmarshal NotFoundInfo: %v", err)
+	}
+	if info.SearchedID != "sch_nonexistent" {
+		t.Errorf("expected searched_id 'sch_nonexistent', got %q", info.SearchedID)
+	}
+	if info.Hint == "" {
+		t.Error("expected hint to be set")
+	}
+}
+
+func TestHandleShow_NotFound_WithAvailableIDs(t *testing.T) {
+	d := newTestDaemon(t)
+
+	// Seed a schedule so available_ids is populated.
+	desired := makeCronDesired("sch_abc123", "test-sched", "0 9 * * *")
+	trig, _ := trigger.ParseTrigger(desired.Trigger)
+	d.mu.Lock()
+	d.schedules["sch_abc123"] = &activeSchedule{
+		desired: desired,
+		runtime: &model.RuntimeState{
+			ID:         "sch_abc123",
+			NextFireAt: trig.NextFireTime(time.Now()),
+		},
+		trigger: trig,
+	}
+	d.mu.Unlock()
+
+	_, rpcErr := d.handleShow(model.ShowParams{ID: "sch_missing"})
+	if rpcErr == nil {
+		t.Fatal("expected error for nonexistent schedule")
+	}
+
+	var info model.NotFoundInfo
+	if err := json.Unmarshal(rpcErr.Data, &info); err != nil {
+		t.Fatalf("failed to unmarshal NotFoundInfo: %v", err)
+	}
+	if len(info.AvailableIDs) == 0 {
+		t.Error("expected available_ids to be populated")
+	}
 }
 
 func TestHandleRemove_NotFound(t *testing.T) {
@@ -125,6 +168,15 @@ func TestHandleRemove_NotFound(t *testing.T) {
 	if rpcErr.Code != model.RPCErrCodeNotFound {
 		t.Errorf("expected error code %d, got %d", model.RPCErrCodeNotFound, rpcErr.Code)
 	}
+
+	// Verify structured data.
+	var info model.NotFoundInfo
+	if err := json.Unmarshal(rpcErr.Data, &info); err != nil {
+		t.Fatalf("failed to unmarshal NotFoundInfo: %v", err)
+	}
+	if info.SearchedID != "sch_missing" {
+		t.Errorf("expected searched_id 'sch_missing', got %q", info.SearchedID)
+	}
 }
 
 func TestHandle_UnknownMethod(t *testing.T) {
@@ -136,6 +188,18 @@ func TestHandle_UnknownMethod(t *testing.T) {
 	}
 	if rpcErr.Code != model.RPCErrCodeMethodNotFound {
 		t.Errorf("expected error code %d, got %d", model.RPCErrCodeMethodNotFound, rpcErr.Code)
+	}
+
+	// Verify structured MethodNotFoundInfo.
+	var info model.MethodNotFoundInfo
+	if err := json.Unmarshal(rpcErr.Data, &info); err != nil {
+		t.Fatalf("failed to unmarshal MethodNotFoundInfo: %v", err)
+	}
+	if info.Method != "unknown_method" {
+		t.Errorf("expected method 'unknown_method', got %q", info.Method)
+	}
+	if len(info.AvailableMethods) == 0 {
+		t.Error("expected available_methods to be populated")
 	}
 }
 
@@ -289,6 +353,21 @@ func TestHandleAdd_InvalidTrigger(t *testing.T) {
 	if rpcErr.Code != model.RPCErrCodeInvalidParams {
 		t.Errorf("expected error code %d, got %d", model.RPCErrCodeInvalidParams, rpcErr.Code)
 	}
+
+	// Verify structured InvalidTriggerInfo.
+	var info model.InvalidTriggerInfo
+	if err := json.Unmarshal(rpcErr.Data, &info); err != nil {
+		t.Fatalf("failed to unmarshal InvalidTriggerInfo: %v", err)
+	}
+	if info.TriggerType != "cron" {
+		t.Errorf("expected trigger_type 'cron', got %q", info.TriggerType)
+	}
+	if info.RawError == "" {
+		t.Error("expected raw_error to be set")
+	}
+	if info.Example == "" {
+		t.Error("expected example to be set")
+	}
 }
 
 func TestBuildSummary(t *testing.T) {
@@ -397,6 +476,14 @@ func TestHandlePause_NotFound(t *testing.T) {
 	if rpcErr.Code != model.RPCErrCodeNotFound {
 		t.Errorf("expected error code %d, got %d", model.RPCErrCodeNotFound, rpcErr.Code)
 	}
+
+	var info model.NotFoundInfo
+	if err := json.Unmarshal(rpcErr.Data, &info); err != nil {
+		t.Fatalf("failed to unmarshal NotFoundInfo: %v", err)
+	}
+	if info.SearchedID != "sch_missing" {
+		t.Errorf("expected searched_id 'sch_missing', got %q", info.SearchedID)
+	}
 }
 
 func TestHandlePause_AlreadyPaused(t *testing.T) {
@@ -418,8 +505,23 @@ func TestHandlePause_AlreadyPaused(t *testing.T) {
 	if rpcErr == nil {
 		t.Fatal("expected error for already paused schedule")
 	}
-	if rpcErr.Code != model.RPCErrCodeInvalidParams {
-		t.Errorf("expected error code %d, got %d", model.RPCErrCodeInvalidParams, rpcErr.Code)
+	if rpcErr.Code != model.RPCErrCodeStateConflict {
+		t.Errorf("expected error code %d, got %d", model.RPCErrCodeStateConflict, rpcErr.Code)
+	}
+
+	// Verify structured StateConflictInfo.
+	var info model.StateConflictInfo
+	if err := json.Unmarshal(rpcErr.Data, &info); err != nil {
+		t.Fatalf("failed to unmarshal StateConflictInfo: %v", err)
+	}
+	if info.ScheduleID != "sch_p02" {
+		t.Errorf("expected schedule_id 'sch_p02', got %q", info.ScheduleID)
+	}
+	if info.CurrentStatus != "paused" {
+		t.Errorf("expected current_status 'paused', got %q", info.CurrentStatus)
+	}
+	if info.SuggestedCommand == "" {
+		t.Error("expected suggested_command to be set")
 	}
 }
 
@@ -444,8 +546,20 @@ func TestHandleUnpause_NotPaused(t *testing.T) {
 	if rpcErr == nil {
 		t.Fatal("expected error for non-paused schedule")
 	}
-	if rpcErr.Code != model.RPCErrCodeInvalidParams {
-		t.Errorf("expected error code %d, got %d", model.RPCErrCodeInvalidParams, rpcErr.Code)
+	if rpcErr.Code != model.RPCErrCodeStateConflict {
+		t.Errorf("expected error code %d, got %d", model.RPCErrCodeStateConflict, rpcErr.Code)
+	}
+
+	// Verify structured StateConflictInfo.
+	var info model.StateConflictInfo
+	if err := json.Unmarshal(rpcErr.Data, &info); err != nil {
+		t.Fatalf("failed to unmarshal StateConflictInfo: %v", err)
+	}
+	if info.CurrentStatus != "active" {
+		t.Errorf("expected current_status 'active', got %q", info.CurrentStatus)
+	}
+	if info.SuggestedCommand == "" {
+		t.Error("expected suggested_command to be set")
 	}
 }
 
@@ -458,6 +572,14 @@ func TestHandleUnpause_NotFound(t *testing.T) {
 	}
 	if rpcErr.Code != model.RPCErrCodeNotFound {
 		t.Errorf("expected error code %d, got %d", model.RPCErrCodeNotFound, rpcErr.Code)
+	}
+
+	var info model.NotFoundInfo
+	if err := json.Unmarshal(rpcErr.Data, &info); err != nil {
+		t.Fatalf("failed to unmarshal NotFoundInfo: %v", err)
+	}
+	if info.SearchedID != "sch_missing" {
+		t.Errorf("expected searched_id 'sch_missing', got %q", info.SearchedID)
 	}
 }
 

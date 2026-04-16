@@ -445,6 +445,232 @@ func TestFormatDuplicateError_JSON(t *testing.T) {
 	}
 }
 
+// ---------- FormatNotFoundError ----------
+
+func TestFormatNotFoundError_PlainText(t *testing.T) {
+	info := &model.NotFoundInfo{
+		SearchedID:   "sch_xyz",
+		AvailableIDs: []string{"sch_a1b (Schedule A)", "sch_c2d (Schedule B)"},
+		ClosestMatch: "sch_a1b",
+		Hint:         `run "sundial list" to see available schedules`,
+	}
+	got := FormatNotFoundError(info, false)
+	want := `Error: schedule not found
+  searched: sch_xyz
+  closest: sch_a1b
+  hint: run "sundial list" to see available schedules`
+	if got != want {
+		t.Errorf("FormatNotFoundError mismatch.\nwant:\n%s\n\ngot:\n%s", want, got)
+	}
+}
+
+func TestFormatNotFoundError_NoClosestMatch(t *testing.T) {
+	info := &model.NotFoundInfo{
+		SearchedID: "sch_xyz",
+		Hint:       `run "sundial list" to see available schedules`,
+	}
+	got := FormatNotFoundError(info, false)
+	if contains(got, "closest") {
+		t.Errorf("expected no closest line when empty, got:\n%s", got)
+	}
+}
+
+func TestFormatNotFoundError_JSON(t *testing.T) {
+	info := &model.NotFoundInfo{
+		SearchedID:   "sch_xyz",
+		AvailableIDs: []string{"sch_a1b"},
+		ClosestMatch: "sch_a1b",
+		Hint:         "use sundial list",
+	}
+	got := FormatNotFoundError(info, true)
+	var parsed map[string]interface{}
+	if err := json.Unmarshal([]byte(got), &parsed); err != nil {
+		t.Fatalf("invalid JSON: %v\nraw: %s", err, got)
+	}
+	if parsed["error"] != "schedule not found" {
+		t.Errorf("expected error field, got %v", parsed["error"])
+	}
+	if parsed["searched_id"] != "sch_xyz" {
+		t.Errorf("expected searched_id, got %v", parsed["searched_id"])
+	}
+	if parsed["closest_match"] != "sch_a1b" {
+		t.Errorf("expected closest_match, got %v", parsed["closest_match"])
+	}
+}
+
+// ---------- FormatGitPreconditionError ----------
+
+func TestFormatGitPreconditionError_PlainText(t *testing.T) {
+	info := &model.GitPreconditionInfo{
+		FailureType:      "rebase",
+		DataRepoPath:     "~/data_repo",
+		RecoveryCommands: []string{"git -C ~/data_repo rebase --abort"},
+	}
+	got := FormatGitPreconditionError(info, false)
+	want := `Error: git precondition failed
+  type: rebase
+  repo: ~/data_repo
+  recover: git -C ~/data_repo rebase --abort`
+	if got != want {
+		t.Errorf("FormatGitPreconditionError mismatch.\nwant:\n%s\n\ngot:\n%s", want, got)
+	}
+}
+
+func TestFormatGitPreconditionError_JSON(t *testing.T) {
+	info := &model.GitPreconditionInfo{
+		FailureType:      "merge",
+		DataRepoPath:     "/tmp/repo",
+		RecoveryCommands: []string{"git merge --abort"},
+	}
+	got := FormatGitPreconditionError(info, true)
+	var parsed map[string]interface{}
+	if err := json.Unmarshal([]byte(got), &parsed); err != nil {
+		t.Fatalf("invalid JSON: %v\nraw: %s", err, got)
+	}
+	if parsed["failure_type"] != "merge" {
+		t.Errorf("expected failure_type 'merge', got %v", parsed["failure_type"])
+	}
+	if parsed["data_repo_path"] != "/tmp/repo" {
+		t.Errorf("expected data_repo_path, got %v", parsed["data_repo_path"])
+	}
+}
+
+// ---------- FormatStateConflictError ----------
+
+func TestFormatStateConflictError_PlainText(t *testing.T) {
+	info := &model.StateConflictInfo{
+		ScheduleID:       "sch_a1b2c3",
+		ScheduleName:     "Trash bin check",
+		CurrentStatus:    "paused",
+		SuggestedCommand: "sundial unpause sch_a1b2c3",
+	}
+	got := FormatStateConflictError(info, false)
+	want := `Error: schedule is already paused
+  id: sch_a1b2c3
+  name: Trash bin check
+  status: paused
+  hint: run "sundial unpause sch_a1b2c3" to change state`
+	if got != want {
+		t.Errorf("FormatStateConflictError mismatch.\nwant:\n%s\n\ngot:\n%s", want, got)
+	}
+}
+
+func TestFormatStateConflictError_JSON(t *testing.T) {
+	info := &model.StateConflictInfo{
+		ScheduleID:       "sch_a1b2c3",
+		ScheduleName:     "Trash bin check",
+		CurrentStatus:    "paused",
+		SuggestedCommand: "sundial unpause sch_a1b2c3",
+	}
+	got := FormatStateConflictError(info, true)
+	var parsed map[string]interface{}
+	if err := json.Unmarshal([]byte(got), &parsed); err != nil {
+		t.Fatalf("invalid JSON: %v\nraw: %s", err, got)
+	}
+	if parsed["schedule_id"] != "sch_a1b2c3" {
+		t.Errorf("expected schedule_id, got %v", parsed["schedule_id"])
+	}
+	if parsed["suggested_command"] != "sundial unpause sch_a1b2c3" {
+		t.Errorf("expected suggested_command, got %v", parsed["suggested_command"])
+	}
+}
+
+// ---------- FormatDaemonUnreachableError ----------
+
+func TestFormatDaemonUnreachableError_SocketNotFound(t *testing.T) {
+	info := &model.DaemonUnreachableError{
+		SocketPath:    "/tmp/sundial.sock",
+		FailureReason: "socket_not_found",
+	}
+	got := FormatDaemonUnreachableError(info, false)
+	if !contains(got, "daemon is not running") {
+		t.Errorf("expected 'daemon is not running', got:\n%s", got)
+	}
+	if !contains(got, "socket not found") {
+		t.Errorf("expected 'socket not found' reason, got:\n%s", got)
+	}
+	if !contains(got, "/tmp/sundial.sock") {
+		t.Errorf("expected socket path, got:\n%s", got)
+	}
+	if !contains(got, "sundial install") {
+		t.Errorf("expected install hint, got:\n%s", got)
+	}
+}
+
+func TestFormatDaemonUnreachableError_ConnectionRefused(t *testing.T) {
+	info := &model.DaemonUnreachableError{
+		SocketPath:    "/tmp/sundial.sock",
+		FailureReason: "connection_refused",
+	}
+	got := FormatDaemonUnreachableError(info, false)
+	if !contains(got, "connection refused") {
+		t.Errorf("expected 'connection refused' reason, got:\n%s", got)
+	}
+}
+
+func TestFormatDaemonUnreachableError_JSON(t *testing.T) {
+	info := &model.DaemonUnreachableError{
+		SocketPath:    "/tmp/sundial.sock",
+		FailureReason: "socket_not_found",
+	}
+	got := FormatDaemonUnreachableError(info, true)
+	var parsed map[string]interface{}
+	if err := json.Unmarshal([]byte(got), &parsed); err != nil {
+		t.Fatalf("invalid JSON: %v\nraw: %s", err, got)
+	}
+	if parsed["error"] != "daemon is not running" {
+		t.Errorf("expected error field, got %v", parsed["error"])
+	}
+	if parsed["socket_path"] != "/tmp/sundial.sock" {
+		t.Errorf("expected socket_path, got %v", parsed["socket_path"])
+	}
+	if parsed["reason"] != "socket_not_found" {
+		t.Errorf("expected reason, got %v", parsed["reason"])
+	}
+}
+
+// ---------- FormatInvalidTriggerError ----------
+
+func TestFormatInvalidTriggerError_PlainText(t *testing.T) {
+	info := &model.InvalidTriggerInfo{
+		TriggerType: "cron",
+		RawError:    "invalid cron expression",
+		Example:     `sundial add --type cron --cron "0 9 * * 1-5" --command "echo hello"`,
+	}
+	got := FormatInvalidTriggerError(info, false)
+	if !contains(got, "invalid trigger") {
+		t.Errorf("expected 'invalid trigger', got:\n%s", got)
+	}
+	if !contains(got, "cron") {
+		t.Errorf("expected trigger type 'cron', got:\n%s", got)
+	}
+	if !contains(got, "invalid cron expression") {
+		t.Errorf("expected raw error, got:\n%s", got)
+	}
+	if !contains(got, "example:") {
+		t.Errorf("expected example, got:\n%s", got)
+	}
+}
+
+func TestFormatInvalidTriggerError_JSON(t *testing.T) {
+	info := &model.InvalidTriggerInfo{
+		TriggerType: "solar",
+		RawError:    "unknown event",
+		Example:     "sundial add --type solar ...",
+	}
+	got := FormatInvalidTriggerError(info, true)
+	var parsed map[string]interface{}
+	if err := json.Unmarshal([]byte(got), &parsed); err != nil {
+		t.Fatalf("invalid JSON: %v\nraw: %s", err, got)
+	}
+	if parsed["trigger_type"] != "solar" {
+		t.Errorf("expected trigger_type 'solar', got %v", parsed["trigger_type"])
+	}
+	if parsed["raw_error"] != "unknown event" {
+		t.Errorf("expected raw_error, got %v", parsed["raw_error"])
+	}
+}
+
 // ---------- FormatError ----------
 
 func TestFormatError_PlainText(t *testing.T) {
