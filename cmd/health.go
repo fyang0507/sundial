@@ -1,8 +1,8 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
-	"os"
 
 	"github.com/fyang0507/sundial/internal/config"
 	"github.com/fyang0507/sundial/internal/format"
@@ -13,8 +13,8 @@ import (
 
 var healthCmd = &cobra.Command{
 	Use:   "health",
-	Short: "Check daemon and system health",
-	Long:  `Run health checks against the daemon, config, and data repo.`,
+	Short: "Check daemon status and configuration",
+	Long:  `Report whether the daemon is running and the parameters it was started with.`,
 	Run:   runHealth,
 }
 
@@ -23,90 +23,31 @@ func init() {
 }
 
 func runHealth(cmd *cobra.Command, args []string) {
-	// Try to load config for local checks.
-	cfgPath, cfgErr := config.FindConfigPath()
-	var cfg *model.Config
-	configValid := false
-	dataRepoOK := false
-
-	if cfgErr == nil {
-		loaded, loadErr := config.Load(cfgPath)
-		if loadErr == nil {
-			cfg = loaded
-			if validateErr := config.Validate(cfg); validateErr == nil {
-				configValid = true
-				// Check data repo exists.
-				if _, statErr := os.Stat(cfg.DataRepo); statErr == nil {
-					dataRepoOK = true
-				}
-			}
+	// Determine socket path: use config if available, otherwise the well-known default.
+	socketPath := config.ExpandPath(model.DefaultSocketPath)
+	if cfgPath, err := config.FindConfigPath(); err == nil {
+		if cfg, err := config.Load(cfgPath); err == nil {
+			socketPath = cfg.Daemon.SocketPath
 		}
 	}
 
-	// Try to reach daemon.
+	// Ask the daemon — it is the source of truth for all health checks.
 	var daemonResult model.HealthResult
-	daemonReachable := false
-
-	if cfg != nil {
-		client := ipc.NewClient(cfg.Daemon.SocketPath)
-		if err := client.Call(model.MethodHealth, nil, &daemonResult); err == nil {
-			daemonReachable = true
-		}
-	}
-
-	if daemonReachable {
-		// Use the full result from the daemon.
+	client := ipc.NewClient(socketPath)
+	if err := client.Call(model.MethodHealth, nil, &daemonResult); err == nil {
 		fmt.Println(format.FormatHealthResult(&daemonResult, jsonOutput))
 		return
 	}
 
-	// Daemon not reachable — build a local-only health result.
-	result := model.HealthResult{
-		Healthy:       false,
-		DaemonRunning: false,
-		ConfigValid:   configValid,
-		DataRepoOK:    dataRepoOK,
-	}
-
-	result.Checks = append(result.Checks, model.HealthCheck{
-		Name:    "daemon",
-		Status:  "error",
-		Message: "not running",
-	})
-
-	if configValid {
-		result.Checks = append(result.Checks, model.HealthCheck{
-			Name:   "config",
-			Status: "ok",
-		})
+	// Daemon unreachable.
+	if jsonOutput {
+		out, _ := json.Marshal(map[string]any{"daemon_running": false})
+		fmt.Println(string(out))
 	} else {
-		msg := "not found"
-		if cfgErr == nil {
-			msg = "invalid"
-		}
-		result.Checks = append(result.Checks, model.HealthCheck{
-			Name:    "config",
-			Status:  "error",
-			Message: msg,
-		})
+		fmt.Println("sundial health")
+		fmt.Println()
+		fmt.Println("daemon: not running")
+		fmt.Println()
+		fmt.Println("hint: run 'make start' from the sundial repo to start the daemon")
 	}
-
-	if dataRepoOK {
-		result.Checks = append(result.Checks, model.HealthCheck{
-			Name:   "data_repo",
-			Status: "ok",
-		})
-	} else {
-		msg := "not found"
-		if configValid {
-			msg = "path does not exist"
-		}
-		result.Checks = append(result.Checks, model.HealthCheck{
-			Name:    "data_repo",
-			Status:  "error",
-			Message: msg,
-		})
-	}
-
-	fmt.Println(format.FormatHealthResult(&result, jsonOutput))
 }

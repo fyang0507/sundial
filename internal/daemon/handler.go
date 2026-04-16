@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fyang0507/sundial/internal/config"
+	"github.com/fyang0507/sundial/internal/launchd"
 	"github.com/fyang0507/sundial/internal/model"
 	"github.com/fyang0507/sundial/internal/similarity"
 	"github.com/fyang0507/sundial/internal/trigger"
@@ -598,137 +598,23 @@ func (d *Daemon) handleReload() (*model.ReloadResult, *model.RPCError) {
 	}, nil
 }
 
-// handleHealth runs all health checks and returns the result.
+// handleHealth reports that the daemon is running and the parameters it was started with.
 func (d *Daemon) handleHealth() (*model.HealthResult, *model.RPCError) {
-	result := &model.HealthResult{
-		DaemonRunning: true,
-		Checks:        make([]model.HealthCheck, 0),
-	}
-
-	// Daemon running check.
-	result.Checks = append(result.Checks, model.HealthCheck{
-		Name:   "daemon_running",
-		Status: "ok",
-	})
-
-	// Config valid check.
-	configErr := config.Validate(d.cfg)
-	result.ConfigValid = configErr == nil
-	if configErr == nil {
-		result.Checks = append(result.Checks, model.HealthCheck{
-			Name:   "config_valid",
-			Status: "ok",
-		})
-	} else {
-		result.Checks = append(result.Checks, model.HealthCheck{
-			Name:    "config_valid",
-			Status:  "error",
-			Message: configErr.Error(),
-		})
-	}
-
-	// Data repo check.
-	repoExists := false
-	if info, err := os.Stat(d.cfg.DataRepo); err == nil && info.IsDir() {
-		gitDir := filepath.Join(d.cfg.DataRepo, ".git")
-		if info, err := os.Stat(gitDir); err == nil && info.IsDir() {
-			repoExists = true
-		}
-	}
-	result.DataRepoOK = repoExists
-	if repoExists {
-		result.Checks = append(result.Checks, model.HealthCheck{
-			Name:   "data_repo",
-			Status: "ok",
-		})
-	} else {
-		result.Checks = append(result.Checks, model.HealthCheck{
-			Name:    "data_repo",
-			Status:  "error",
-			Message: "data repo path does not exist or is not a git repository",
-		})
-	}
-
-	// Git status check.
-	gitClean := true
-	preErr := d.gitOps.CheckRepoPreconditions()
-	if preErr != nil {
-		gitClean = false
-		result.Checks = append(result.Checks, model.HealthCheck{
-			Name:    "git_preconditions",
-			Status:  "warn",
-			Message: preErr.Error(),
-		})
-	} else {
-		result.Checks = append(result.Checks, model.HealthCheck{
-			Name:   "git_preconditions",
-			Status: "ok",
-		})
-	}
-
-	// Pending pushes.
-	hasPending, err := d.gitOps.HasPendingPushes()
-	if err != nil {
-		result.Checks = append(result.Checks, model.HealthCheck{
-			Name:    "pending_pushes",
-			Status:  "warn",
-			Message: err.Error(),
-		})
-	} else if hasPending {
-		result.PendingPushes = true
-		gitClean = false
-		result.Checks = append(result.Checks, model.HealthCheck{
-			Name:    "pending_pushes",
-			Status:  "warn",
-			Message: "local commits not yet pushed",
-		})
-	} else {
-		result.Checks = append(result.Checks, model.HealthCheck{
-			Name:   "pending_pushes",
-			Status: "ok",
-		})
-	}
-
-	// Modified schedule files.
-	schedulesDir := filepath.Join(d.cfg.DataRepo, "sundial", "schedules")
-	modFiles, err := d.gitOps.ListModifiedScheduleFiles(schedulesDir)
-	if err != nil {
-		log.Printf("WARN: failed to list modified schedule files: %v", err)
-	}
-	if len(modFiles) > 0 {
-		gitClean = false
-		result.ScheduleFileWarnings = modFiles
-		result.Checks = append(result.Checks, model.HealthCheck{
-			Name:    "schedule_files",
-			Status:  "warn",
-			Message: fmt.Sprintf("%d schedule files have local modifications", len(modFiles)),
-		})
-	}
-	result.DataRepoGitClean = gitClean
-
-	// Schedule count.
 	d.mu.RLock()
-	result.ScheduleCount = len(d.schedules)
-
-	// Orphaned schedules (runtime without desired).
-	// Since we track only active schedules, we detect orphans from runtime store.
+	scheduleCount := len(d.schedules)
 	d.mu.RUnlock()
 
-	runtimeList, err := d.runtimeStore.List()
-	if err == nil {
-		d.mu.RLock()
-		for _, rs := range runtimeList {
-			if _, ok := d.schedules[rs.ID]; !ok {
-				result.OrphanedSchedules = append(result.OrphanedSchedules, rs.ID)
-			}
-		}
-		d.mu.RUnlock()
-	}
-
-	// Overall healthy status.
-	result.Healthy = result.DaemonRunning && result.ConfigValid && result.DataRepoOK && result.DataRepoGitClean
-
-	return result, nil
+	return &model.HealthResult{
+		DaemonRunning: true,
+		PID:           os.Getpid(),
+		Uptime:        time.Since(d.startedAt).Truncate(time.Second).String(),
+		DataRepo:      d.cfg.DataRepo,
+		SocketPath:    d.cfg.Daemon.SocketPath,
+		LogLevel:      d.cfg.Daemon.LogLevel,
+		LogFile:       d.cfg.Daemon.LogFile,
+		Launchd:       launchd.IsInstalled(),
+		ScheduleCount: scheduleCount,
+	}, nil
 }
 
 // findCompletedByName scans the desired store for a completed schedule

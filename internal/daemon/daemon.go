@@ -7,6 +7,7 @@ import (
 	"os/signal"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/fyang0507/sundial/internal/gitops"
 	"github.com/fyang0507/sundial/internal/ipc"
@@ -35,6 +36,8 @@ type Daemon struct {
 	schedules map[string]*activeSchedule // protected by mu
 	mu        sync.RWMutex
 
+	startedAt time.Time
+
 	wake chan struct{} // signal to re-evaluate next fire
 	quit chan struct{} // shutdown signal
 	done chan struct{} // closed when daemon fully stopped
@@ -55,6 +58,7 @@ func New(cfg *model.Config) (*Daemon, error) {
 		runLogStore:  store.NewRunLogStore(cfg.State.LogsPath),
 		gitOps:       gitops.NewGitOps(cfg.DataRepo),
 		schedules:    make(map[string]*activeSchedule),
+		startedAt:    time.Now(),
 		wake:         make(chan struct{}, 1),
 		quit:         make(chan struct{}),
 		done:         make(chan struct{}),

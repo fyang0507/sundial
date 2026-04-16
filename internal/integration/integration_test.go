@@ -502,14 +502,11 @@ func TestHealth(t *testing.T) {
 	if !healthResult.DaemonRunning {
 		t.Error("expected daemon_running=true")
 	}
-	if !healthResult.ConfigValid {
-		t.Error("expected config_valid=true")
+	if healthResult.PID == 0 {
+		t.Error("expected non-zero pid")
 	}
-	if !healthResult.DataRepoOK {
-		t.Error("expected data_repo_ok=true")
-	}
-	if !healthResult.Healthy {
-		t.Error("expected healthy=true")
+	if healthResult.DataRepo == "" {
+		t.Error("expected non-empty data_repo")
 	}
 }
 

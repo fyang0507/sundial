@@ -225,62 +225,47 @@ func TestFormatShowResult_JSON(t *testing.T) {
 
 func TestFormatHealthResult_PlainText(t *testing.T) {
 	r := &model.HealthResult{
-		Healthy:       true,
+		DaemonRunning: true,
+		PID:           12345,
+		Uptime:        "1h30m0s",
+		DataRepo:      "/home/user/data",
+		SocketPath:    "/tmp/sundial.sock",
+		LogLevel:      "info",
+		LogFile:       "/var/log/sundial.log",
 		ScheduleCount: 3,
-		Checks: []model.HealthCheck{
-			{Name: "daemon", Status: "ok"},
-			{Name: "config", Status: "ok"},
-			{Name: "data_repo", Status: "ok"},
-			{Name: "git_status", Status: "ok", Message: "no pending pushes"},
-		},
-		OrphanedSchedules: []string{"sch_abc123"},
 	}
 
 	got := FormatHealthResult(r, false)
 
-	// Verify header.
 	if !contains(got, "sundial health") {
 		t.Error("expected 'sundial health' header")
 	}
-	// Check statuses appear.
 	if !contains(got, "daemon: ok") {
 		t.Error("expected 'daemon: ok'")
 	}
-	if !contains(got, "git_status: ok (no pending pushes)") {
-		t.Error("expected git_status with message")
+	if !contains(got, "pid: 12345") {
+		t.Error("expected pid")
+	}
+	if !contains(got, "uptime: 1h30m0s") {
+		t.Error("expected uptime")
+	}
+	if !contains(got, "data_repo: /home/user/data") {
+		t.Error("expected data_repo")
 	}
 	if !contains(got, "schedules: 3 active") {
 		t.Error("expected schedule count")
 	}
-	// Warnings section.
-	if !contains(got, "warnings:") {
-		t.Error("expected warnings section")
-	}
-	if !contains(got, "1 orphaned schedule: sch_abc123") {
-		t.Error("expected orphaned schedule warning")
-	}
-}
-
-func TestFormatHealthResult_NoWarnings(t *testing.T) {
-	r := &model.HealthResult{
-		Healthy:       true,
-		ScheduleCount: 0,
-		Checks: []model.HealthCheck{
-			{Name: "daemon", Status: "ok"},
-		},
-	}
-	got := FormatHealthResult(r, false)
-	if contains(got, "warnings:") {
-		t.Error("should not have warnings section when none exist")
-	}
 }
 
 func TestFormatHealthResult_JSON(t *testing.T) {
-	r := &model.HealthResult{Healthy: true}
+	r := &model.HealthResult{DaemonRunning: true, PID: 1}
 	got := FormatHealthResult(r, true)
 	var parsed map[string]interface{}
 	if err := json.Unmarshal([]byte(got), &parsed); err != nil {
 		t.Fatalf("invalid JSON: %v", err)
+	}
+	if parsed["daemon_running"] != true {
+		t.Error("expected daemon_running=true in JSON")
 	}
 }
 

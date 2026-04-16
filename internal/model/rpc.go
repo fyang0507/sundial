@@ -154,25 +154,18 @@ type ReloadResult struct {
 	Message       string `json:"message"`
 }
 
-// HealthCheck represents a single check in the health report.
-type HealthCheck struct {
-	Name    string `json:"name"`
-	Status  string `json:"status"` // "ok", "warn", "error"
-	Message string `json:"message,omitempty"`
-}
-
 // HealthResult is returned by a successful "health" RPC.
+// It confirms the daemon is running and reports the parameters it was started with.
 type HealthResult struct {
-	Healthy              bool          `json:"healthy"`
-	DaemonRunning        bool          `json:"daemon_running"`
-	ConfigValid          bool          `json:"config_valid"`
-	DataRepoOK           bool          `json:"data_repo_ok"`
-	DataRepoGitClean     bool          `json:"data_repo_git_clean"`
-	ScheduleCount        int           `json:"schedule_count"`
-	PendingPushes        bool          `json:"pending_pushes"`
-	OrphanedSchedules    []string      `json:"orphaned_schedules,omitempty"`
-	Checks               []HealthCheck `json:"checks"`
-	ScheduleFileWarnings []string      `json:"schedule_file_warnings,omitempty"`
+	DaemonRunning bool   `json:"daemon_running"`
+	PID           int    `json:"pid"`
+	Uptime        string `json:"uptime"`
+	DataRepo      string `json:"data_repo"`
+	SocketPath    string `json:"socket_path"`
+	LogLevel      string `json:"log_level"`
+	LogFile       string `json:"log_file"`
+	Launchd       bool   `json:"launchd"`
+	ScheduleCount int    `json:"schedule_count"`
 }
 
 // DuplicateInfo is included in error data when a duplicate schedule is detected.

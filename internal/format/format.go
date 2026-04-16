@@ -133,32 +133,19 @@ func FormatHealthResult(r *model.HealthResult, jsonMode bool) string {
 
 	var b strings.Builder
 	b.WriteString("sundial health\n\n")
-
-	for _, c := range r.Checks {
-		line := c.Status
-		if c.Message != "" {
-			line += " (" + c.Message + ")"
-		}
-		kv(&b, c.Name, line)
+	launchdStatus := "no"
+	if r.Launchd {
+		launchdStatus = "yes"
 	}
-
+	kv(&b, "daemon", "ok")
+	kv(&b, "pid", fmt.Sprintf("%d", r.PID))
+	kv(&b, "uptime", r.Uptime)
+	kv(&b, "data_repo", r.DataRepo)
+	kv(&b, "socket_path", r.SocketPath)
+	kv(&b, "log_level", r.LogLevel)
+	kv(&b, "log_file", r.LogFile)
+	kv(&b, "launchd", launchdStatus)
 	kv(&b, "schedules", fmt.Sprintf("%d active", r.ScheduleCount))
-
-	// Collect warnings from orphaned schedules and schedule file warnings.
-	var warnings []string
-	if len(r.OrphanedSchedules) > 0 {
-		warnings = append(warnings, fmt.Sprintf("%d orphaned schedule: %s",
-			len(r.OrphanedSchedules), strings.Join(r.OrphanedSchedules, ", ")))
-	}
-	warnings = append(warnings, r.ScheduleFileWarnings...)
-
-	if len(warnings) > 0 {
-		b.WriteString("\nwarnings:\n")
-		for _, w := range warnings {
-			b.WriteString("  - " + w + "\n")
-		}
-	}
-
 	return strings.TrimRight(b.String(), "\n")
 }
 

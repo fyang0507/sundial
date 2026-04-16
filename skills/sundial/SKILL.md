@@ -12,7 +12,7 @@ CLI scheduler with cron, solar, and poll triggers. A background daemon manages a
 If `which sundial` fails or `sundial health` shows the daemon is not running, start it from the sundial repo:
 
 ```bash
-cd <sundial-repo> && make start
+cd <sundial-repo> && make start [launchd=1]
 ```
 
 This builds, installs, and starts the daemon. Once running, all `sundial` commands work from any directory.
