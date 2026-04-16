@@ -227,7 +227,6 @@ func TestFormatHealthResult_PlainText(t *testing.T) {
 	r := &model.HealthResult{
 		Healthy:       true,
 		ScheduleCount: 3,
-		EffectivePath: "/usr/local/bin:/opt/homebrew/bin",
 		Checks: []model.HealthCheck{
 			{Name: "daemon", Status: "ok"},
 			{Name: "config", Status: "ok"},

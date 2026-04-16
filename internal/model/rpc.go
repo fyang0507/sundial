@@ -171,7 +171,6 @@ type HealthResult struct {
 	ScheduleCount        int           `json:"schedule_count"`
 	PendingPushes        bool          `json:"pending_pushes"`
 	OrphanedSchedules    []string      `json:"orphaned_schedules,omitempty"`
-	EffectivePath        string        `json:"effective_path,omitempty"`
 	Checks               []HealthCheck `json:"checks"`
 	ScheduleFileWarnings []string      `json:"schedule_file_warnings,omitempty"`
 }
