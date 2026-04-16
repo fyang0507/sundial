@@ -97,10 +97,19 @@ func (d *Daemon) fireDueSchedules() {
 
 // advanceSchedule recomputes the next fire time for a single schedule
 // and persists the updated runtime state. For --once schedules that have
-// already fired, it marks the schedule as completed.
+// already fired, it marks the schedule as completed. For poll schedules
+// whose timeout has expired, it marks them as completed with reason "timeout".
 func (d *Daemon) advanceSchedule(sched *activeSchedule) {
 	if sched.desired.Once && sched.runtime.FireCount > 0 {
-		d.completeSchedule(sched)
+		d.completeSchedule(sched, model.CompletionTriggered)
+		return
+	}
+
+	// Poll timeout: complete the schedule after the deadline passes.
+	if sched.desired.Trigger.Type == model.TriggerTypePoll && d.isPollTimedOut(sched) {
+		log.Printf("schedule %s (%s): completing after timeout",
+			sched.desired.ID, sched.desired.Name)
+		d.completeSchedule(sched, model.CompletionTimeout)
 		return
 	}
 
@@ -116,10 +125,10 @@ func (d *Daemon) advanceSchedule(sched *activeSchedule) {
 	}
 }
 
-// completeSchedule marks a --once schedule as completed: updates desired state
-// in the data repo, git commits, deletes runtime state, and removes from
-// active schedules.
-func (d *Daemon) completeSchedule(sched *activeSchedule) {
+// completeSchedule marks a schedule as completed with the given reason: updates
+// desired state in the data repo, git commits, deletes runtime state, and
+// removes from active schedules.
+func (d *Daemon) completeSchedule(sched *activeSchedule, reason model.CompletionReason) {
 	id := sched.desired.ID
 	name := sched.desired.Name
 
@@ -128,6 +137,7 @@ func (d *Daemon) completeSchedule(sched *activeSchedule) {
 
 	// Update desired state to completed.
 	sched.desired.Status = model.StatusCompleted
+	sched.desired.CompletionReason = reason
 	if err := d.desiredStore.Write(sched.desired); err != nil {
 		log.Printf("WARN: schedule %s: failed to write completed state: %v", id, err)
 		return

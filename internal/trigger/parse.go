@@ -38,9 +38,15 @@ func parsePollTrigger(cfg model.TriggerConfig) (*PollTrigger, error) {
 		return nil, fmt.Errorf("invalid interval %q: %w", cfg.Interval, err)
 	}
 
+	timeout, err := time.ParseDuration(cfg.Timeout)
+	if err != nil {
+		return nil, fmt.Errorf("invalid timeout %q: %w", cfg.Timeout, err)
+	}
+
 	t := &PollTrigger{
 		TriggerCommand: cfg.TriggerCommand,
 		Interval:       interval,
+		Timeout:        timeout,
 	}
 	if err := t.Validate(); err != nil {
 		return nil, err

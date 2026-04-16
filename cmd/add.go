@@ -25,10 +25,10 @@ var addCmd = &cobra.Command{
     --lat 37.7749 --lon -122.4194 --timezone "America/Los_Angeles" \
     --command "cd ~/project && codex exec 'check trash bins'"
 
-  # Poll trigger — check condition every 2 minutes, fire once when met
+  # Poll trigger — check condition every 2 minutes, timeout after 72 hours
   sundial add --type poll \
     --trigger 'outreach reply-check --contact-id c_abc123 --channel sms' \
-    --interval 2m --once \
+    --interval 2m --timeout 72h --once \
     --command "codex exec 'Reply from c_abc123. Continue campaign.'"
 
   # Dry run — validate and preview without creating
@@ -48,6 +48,7 @@ var (
 	addTimezone       string
 	addTriggerCommand string
 	addInterval       string
+	addTimeout        string
 	addCommand        string
 	addName           string
 	addUserRequest    string
@@ -71,6 +72,7 @@ func init() {
 	addCmd.Flags().StringVar(&addTimezone, "timezone", "", "IANA timezone, e.g. America/Los_Angeles (required for --type solar)")
 	addCmd.Flags().StringVar(&addTriggerCommand, "trigger", "", "condition command; exit 0 = fire (required for --type poll)")
 	addCmd.Flags().StringVar(&addInterval, "interval", "", "check frequency, e.g. \"2m\", \"5m\" (required for --type poll)")
+	addCmd.Flags().StringVar(&addTimeout, "timeout", "", "max lifetime, e.g. \"72h\", \"30m\" (required for --type poll)")
 	addCmd.Flags().StringVar(&addCommand, "command", "", "shell command to execute (required)")
 	addCmd.Flags().StringVar(&addName, "name", "", "human-readable schedule name")
 	addCmd.Flags().StringVar(&addUserRequest, "user-request", "", "original user request that generated this schedule")
@@ -126,8 +128,11 @@ func runAdd(cmd *cobra.Command, args []string) {
 		if addInterval == "" {
 			missing = append(missing, "--interval")
 		}
+		if addTimeout == "" {
+			missing = append(missing, "--timeout")
+		}
 		if len(missing) > 0 {
-			addError(fmt.Sprintf("%s required for --type poll\n\n  Example: sundial add --type poll --trigger 'check-cmd' --interval 2m \\\n    --command \"echo hello\" --once",
+			addError(fmt.Sprintf("%s required for --type poll\n\n  Example: sundial add --type poll --trigger 'check-cmd' --interval 2m --timeout 72h \\\n    --command \"echo hello\" --once",
 				strings.Join(missing, ", ")))
 		}
 	default:
@@ -178,6 +183,9 @@ func runAddDryRun() {
 	if addTriggerCommand != "" {
 		fmt.Printf("trigger:    %s\n", addTriggerCommand)
 	}
+	if addTimeout != "" {
+		fmt.Printf("timeout:    %s\n", addTimeout)
+	}
 	if addOnce {
 		fmt.Printf("once:       true (fires once then completes)\n")
 	}
@@ -217,6 +225,7 @@ func buildTriggerConfig() model.TriggerConfig {
 	case model.TriggerTypePoll:
 		cfg.TriggerCommand = addTriggerCommand
 		cfg.Interval = addInterval
+		cfg.Timeout = addTimeout
 	}
 
 	return cfg
@@ -254,6 +263,7 @@ func buildAddParams() model.AddParams {
 	case model.TriggerTypePoll:
 		params.TriggerCommand = addTriggerCommand
 		params.Interval = addInterval
+		params.Timeout = addTimeout
 	}
 
 	return params

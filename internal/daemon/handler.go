@@ -103,6 +103,7 @@ func (d *Daemon) handleAdd(p model.AddParams) (*model.AddResult, *model.RPCError
 		Days:           p.Days,
 		TriggerCommand: p.TriggerCommand,
 		Interval:       p.Interval,
+		Timeout:        p.Timeout,
 	}
 	if p.Lat != nil && p.Lon != nil {
 		tz := p.Timezone
@@ -952,7 +953,7 @@ func invalidTriggerError(trigType model.TriggerType, err error) *model.RPCError 
 	case model.TriggerTypeSolar:
 		info.Example = `sundial add --type solar --event sunset --offset "-1h" --days mon,tue --lat 37.7749 --lon -122.4194 --timezone "America/Los_Angeles" --command "echo hello"`
 	case model.TriggerTypePoll:
-		info.Example = `sundial add --type poll --trigger 'check-cmd' --interval 2m --command "echo hello" --once`
+		info.Example = `sundial add --type poll --trigger 'check-cmd' --interval 2m --timeout 72h --command "echo hello" --once`
 	}
 	data, _ := json.Marshal(info)
 

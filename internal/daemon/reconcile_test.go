@@ -494,6 +494,7 @@ func makePollDesired(id, name, triggerCmd, interval string) *model.DesiredState 
 			Type:           model.TriggerTypePoll,
 			TriggerCommand: triggerCmd,
 			Interval:       interval,
+			Timeout:        "72h",
 		},
 		Command: "echo fired",
 		Status:  model.StatusActive,
@@ -629,13 +630,16 @@ func TestAdvanceSchedule_Once(t *testing.T) {
 		t.Error("expected completed once schedule to be removed from active schedules")
 	}
 
-	// Desired state should be "completed".
+	// Desired state should be "completed" with reason "triggered".
 	ds, err := d.desiredStore.Read("sch_once01")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if ds.Status != model.StatusCompleted {
 		t.Errorf("expected desired status 'completed', got %q", ds.Status)
+	}
+	if ds.CompletionReason != model.CompletionTriggered {
+		t.Errorf("expected completion reason 'triggered', got %q", ds.CompletionReason)
 	}
 }
 
@@ -676,13 +680,16 @@ func TestAdvanceSchedule_OnceCompletesDesiredState(t *testing.T) {
 
 	d.advanceSchedule(sched)
 
-	// Desired state should be updated to "completed".
+	// Desired state should be updated to "completed" with reason "triggered".
 	ds, err := d.desiredStore.Read("sch_once_c01")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if ds.Status != model.StatusCompleted {
 		t.Errorf("expected desired status 'completed', got %q", ds.Status)
+	}
+	if ds.CompletionReason != model.CompletionTriggered {
+		t.Errorf("expected completion reason 'triggered', got %q", ds.CompletionReason)
 	}
 
 	// Runtime state should have been deleted.
@@ -931,6 +938,170 @@ func TestReconcile_MixedWithPaused(t *testing.T) {
 	// Paused should have zero NextFireAt.
 	if !d.schedules["sch_mx02"].runtime.NextFireAt.IsZero() {
 		t.Error("expected paused schedule to have zero NextFireAt")
+	}
+}
+
+func TestHandleMissedFires_PollTimeoutExpiredCompletesSchedule(t *testing.T) {
+	d := newTestDaemon(t)
+
+	// Create a poll schedule that was created 80h ago with a 72h timeout.
+	desired := makePollDesired("sch_poll_to01", "poll-timeout-test", "true", "2m")
+	desired.CreatedAt = time.Now().Add(-80 * time.Hour)
+	desired.Trigger.Timeout = "72h"
+	if err := d.desiredStore.Write(desired); err != nil {
+		t.Fatal(err)
+	}
+
+	trig, err := trigger.ParseTrigger(desired.Trigger)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	pastTime := time.Now().Add(-5 * time.Minute)
+	runtime := &model.RuntimeState{
+		ID:         "sch_poll_to01",
+		NextFireAt: pastTime,
+	}
+	if err := d.runtimeStore.Write(runtime); err != nil {
+		t.Fatal(err)
+	}
+
+	d.mu.Lock()
+	d.schedules["sch_poll_to01"] = &activeSchedule{
+		desired: desired,
+		runtime: runtime,
+		trigger: trig,
+	}
+	d.mu.Unlock()
+
+	d.handleMissedFires()
+
+	// Schedule should be removed from active map (completed).
+	d.mu.RLock()
+	_, ok := d.schedules["sch_poll_to01"]
+	d.mu.RUnlock()
+	if ok {
+		t.Error("expected timed-out poll schedule to be removed from active schedules")
+	}
+
+	// Desired state should be "completed" with reason "timeout".
+	ds, err := d.desiredStore.Read("sch_poll_to01")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ds.Status != model.StatusCompleted {
+		t.Errorf("expected desired status 'completed', got %q", ds.Status)
+	}
+	if ds.CompletionReason != model.CompletionTimeout {
+		t.Errorf("expected completion reason 'timeout', got %q", ds.CompletionReason)
+	}
+}
+
+func TestAdvanceSchedule_PollTimeoutCompletes(t *testing.T) {
+	d := newTestDaemon(t)
+
+	// Create a poll schedule whose timeout has expired.
+	desired := makePollDesired("sch_poll_to02", "poll-timeout-advance", "true", "2m")
+	desired.CreatedAt = time.Now().Add(-80 * time.Hour)
+	desired.Trigger.Timeout = "72h"
+	if err := d.desiredStore.Write(desired); err != nil {
+		t.Fatal(err)
+	}
+
+	trig, err := trigger.ParseTrigger(desired.Trigger)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	runtime := &model.RuntimeState{
+		ID:         "sch_poll_to02",
+		NextFireAt: time.Now().Add(time.Hour),
+		FireCount:  3,
+	}
+	if err := d.runtimeStore.Write(runtime); err != nil {
+		t.Fatal(err)
+	}
+
+	sched := &activeSchedule{
+		desired: desired,
+		runtime: runtime,
+		trigger: trig,
+	}
+
+	d.mu.Lock()
+	d.schedules["sch_poll_to02"] = sched
+	d.mu.Unlock()
+
+	d.advanceSchedule(sched)
+
+	// Schedule should be completed with reason "timeout".
+	d.mu.RLock()
+	_, ok := d.schedules["sch_poll_to02"]
+	d.mu.RUnlock()
+	if ok {
+		t.Error("expected timed-out poll schedule to be removed from active schedules")
+	}
+
+	ds, err := d.desiredStore.Read("sch_poll_to02")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ds.Status != model.StatusCompleted {
+		t.Errorf("expected desired status 'completed', got %q", ds.Status)
+	}
+	if ds.CompletionReason != model.CompletionTimeout {
+		t.Errorf("expected completion reason 'timeout', got %q", ds.CompletionReason)
+	}
+}
+
+func TestAdvanceSchedule_PollNotTimedOutContinues(t *testing.T) {
+	d := newTestDaemon(t)
+
+	// Create a poll schedule with timeout still in the future.
+	desired := makePollDesired("sch_poll_to03", "poll-no-timeout", "true", "2m")
+	desired.CreatedAt = time.Now().Add(-1 * time.Hour) // created 1h ago
+	desired.Trigger.Timeout = "72h"                     // 72h timeout — still active
+	if err := d.desiredStore.Write(desired); err != nil {
+		t.Fatal(err)
+	}
+
+	trig, err := trigger.ParseTrigger(desired.Trigger)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	runtime := &model.RuntimeState{
+		ID:         "sch_poll_to03",
+		NextFireAt: time.Now().Add(2 * time.Minute),
+		FireCount:  1,
+	}
+	if err := d.runtimeStore.Write(runtime); err != nil {
+		t.Fatal(err)
+	}
+
+	sched := &activeSchedule{
+		desired: desired,
+		runtime: runtime,
+		trigger: trig,
+	}
+
+	d.mu.Lock()
+	d.schedules["sch_poll_to03"] = sched
+	d.mu.Unlock()
+
+	d.advanceSchedule(sched)
+
+	// Schedule should still be active.
+	d.mu.RLock()
+	_, ok := d.schedules["sch_poll_to03"]
+	d.mu.RUnlock()
+	if !ok {
+		t.Error("expected non-timed-out poll schedule to remain active")
+	}
+
+	// NextFireAt should be in the future.
+	if !sched.runtime.NextFireAt.After(time.Now()) {
+		t.Errorf("expected NextFireAt in the future, got %v", sched.runtime.NextFireAt)
 	}
 }
 

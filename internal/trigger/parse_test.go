@@ -117,6 +117,7 @@ func TestParseTrigger_Poll(t *testing.T) {
 		Type:           model.TriggerTypePoll,
 		TriggerCommand: "check-condition",
 		Interval:       "2m",
+		Timeout:        "72h",
 	}
 
 	trigger, err := ParseTrigger(cfg)
@@ -134,6 +135,9 @@ func TestParseTrigger_Poll(t *testing.T) {
 	if pt.Interval != 2*time.Minute {
 		t.Errorf("Interval = %v, want 2m", pt.Interval)
 	}
+	if pt.Timeout != 72*time.Hour {
+		t.Errorf("Timeout = %v, want 72h", pt.Timeout)
+	}
 }
 
 func TestParseTrigger_PollInvalidInterval(t *testing.T) {
@@ -141,6 +145,7 @@ func TestParseTrigger_PollInvalidInterval(t *testing.T) {
 		Type:           model.TriggerTypePoll,
 		TriggerCommand: "check-condition",
 		Interval:       "not-a-duration",
+		Timeout:        "1h",
 	}
 
 	_, err := ParseTrigger(cfg)
@@ -154,6 +159,7 @@ func TestParseTrigger_PollIntervalTooShort(t *testing.T) {
 		Type:           model.TriggerTypePoll,
 		TriggerCommand: "check-condition",
 		Interval:       "5s",
+		Timeout:        "1h",
 	}
 
 	_, err := ParseTrigger(cfg)
@@ -166,11 +172,40 @@ func TestParseTrigger_PollEmptyCommand(t *testing.T) {
 	cfg := model.TriggerConfig{
 		Type:     model.TriggerTypePoll,
 		Interval: "2m",
+		Timeout:  "1h",
 	}
 
 	_, err := ParseTrigger(cfg)
 	if err == nil {
 		t.Fatal("Expected error for empty trigger command")
+	}
+}
+
+func TestParseTrigger_PollInvalidTimeout(t *testing.T) {
+	cfg := model.TriggerConfig{
+		Type:           model.TriggerTypePoll,
+		TriggerCommand: "check-condition",
+		Interval:       "2m",
+		Timeout:        "not-a-duration",
+	}
+
+	_, err := ParseTrigger(cfg)
+	if err == nil {
+		t.Fatal("Expected error for invalid timeout")
+	}
+}
+
+func TestParseTrigger_PollTimeoutShorterThanInterval(t *testing.T) {
+	cfg := model.TriggerConfig{
+		Type:           model.TriggerTypePoll,
+		TriggerCommand: "check-condition",
+		Interval:       "5m",
+		Timeout:        "2m",
+	}
+
+	_, err := ParseTrigger(cfg)
+	if err == nil {
+		t.Fatal("Expected error for timeout shorter than interval")
 	}
 }
 
