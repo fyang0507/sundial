@@ -189,7 +189,12 @@ func (d *Daemon) handleAdd(p model.AddParams) (*model.AddResult, *model.RPCError
 	}
 	d.mu.RUnlock()
 
-	// 3b. Check for completed schedules with matching command — reactivate instead of creating new.
+	// 3b. Check for completed schedules — reactivate instead of creating new.
+	// Name match takes priority (consistent with active duplicate detection order).
+	// Command match is the fallback (preserves existing behavior for unnamed schedules).
+	if completed := d.findCompletedByName(p.Name); completed != nil {
+		return d.reactivateSchedule(completed, trigCfg, trig, p)
+	}
 	if completed := d.findCompletedByCommand(p.Command); completed != nil {
 		return d.reactivateSchedule(completed, trigCfg, trig, p)
 	}
@@ -726,6 +731,25 @@ func (d *Daemon) handleHealth() (*model.HealthResult, *model.RPCError) {
 	return result, nil
 }
 
+// findCompletedByName scans the desired store for a completed schedule
+// with a matching name. Returns nil if name is empty or none found.
+func (d *Daemon) findCompletedByName(name string) *model.DesiredState {
+	if name == "" {
+		return nil
+	}
+	desiredList, err := d.desiredStore.List()
+	if err != nil {
+		log.Printf("WARN: failed to list desired states for reactivation check: %v", err)
+		return nil
+	}
+	for _, ds := range desiredList {
+		if ds.Status == model.StatusCompleted && ds.Name == name {
+			return ds
+		}
+	}
+	return nil
+}
+
 // findCompletedByCommand scans the desired store for a completed schedule
 // with a matching command. Returns nil if none found.
 func (d *Daemon) findCompletedByCommand(command string) *model.DesiredState {
@@ -765,6 +789,9 @@ func (d *Daemon) reactivateSchedule(
 	if p.Name != "" {
 		completed.Name = p.Name
 		name = p.Name
+	}
+	if p.Command != "" && p.Command != completed.Command {
+		completed.Command = p.Command
 	}
 	if p.UserRequest != "" {
 		completed.UserRequest = p.UserRequest
