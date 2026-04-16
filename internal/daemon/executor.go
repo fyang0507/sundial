@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"syscall"
 	"time"
 
 	"github.com/fyang0507/sundial/internal/model"
@@ -48,6 +49,10 @@ func (d *Daemon) execute(sched *activeSchedule) bool {
 		}
 	}
 
+	if sched.desired.Detach {
+		return d.executeDetached(sched)
+	}
+
 	log.Printf("schedule %s (%s): executing command: %s",
 		sched.desired.ID, sched.desired.Name, sched.desired.Command)
 
@@ -77,6 +82,64 @@ func (d *Daemon) execute(sched *activeSchedule) bool {
 		DurationSec:   &durationSec,
 		StdoutPreview: result.StdoutPreview,
 		StderrPreview: result.StderrPreview,
+	}
+	if err := d.runLogStore.Append(entry); err != nil {
+		log.Printf("WARN: schedule %s: failed to append run log: %v",
+			sched.desired.ID, err)
+	}
+
+	return true
+}
+
+// executeDetached spawns the command without waiting for it to exit. This
+// collapses the firing window to the time it takes to Start() the process,
+// so callbacks can safely re-enter the daemon (e.g. `sundial add --refresh`)
+// without tripping the "schedule currently firing" serialization.
+//
+// The child is placed in its own session (Setsid) so it survives daemon
+// restarts and is not killed if launchd signals the daemon's process group.
+// LastExitCode stays nil — no sundial-side visibility into outcome.
+func (d *Daemon) executeDetached(sched *activeSchedule) bool {
+	log.Printf("schedule %s (%s): spawning detached command: %s",
+		sched.desired.ID, sched.desired.Name, sched.desired.Command)
+
+	cmd := exec.Command("/bin/zsh", "-l", "-c", sched.desired.Command)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+
+	now := time.Now()
+	if err := cmd.Start(); err != nil {
+		log.Printf("schedule %s (%s): detached spawn failed: %v",
+			sched.desired.ID, sched.desired.Name, err)
+		return false
+	}
+
+	// Reap the child asynchronously so it doesn't become a zombie. We discard
+	// the exit code — that's the whole point of --detach.
+	go func() {
+		_ = cmd.Wait()
+	}()
+
+	log.Printf("schedule %s (%s): detached child pid=%d",
+		sched.desired.ID, sched.desired.Name, cmd.Process.Pid)
+
+	// Update runtime state — LastExitCode stays nil.
+	sched.runtime.LastFiredAt = &now
+	sched.runtime.LastExitCode = nil
+	sched.runtime.FireCount++
+
+	if err := d.runtimeStore.Write(sched.runtime); err != nil {
+		log.Printf("WARN: schedule %s: failed to persist runtime state after detached spawn: %v",
+			sched.desired.ID, err)
+	}
+
+	// Append a fire entry without exit code or duration.
+	entry := &model.RunLogEntry{
+		Timestamp:  now,
+		Type:       model.LogTypeFire,
+		ScheduleID: sched.desired.ID,
+		Reason:     "detached",
 	}
 	if err := d.runLogStore.Append(entry); err != nil {
 		log.Printf("WARN: schedule %s: failed to append run log: %v",

@@ -180,6 +180,99 @@ func TestExecute_PollTriggerCheckFails(t *testing.T) {
 	}
 }
 
+func TestExecute_DetachedReturnsImmediately(t *testing.T) {
+	d := newTestDaemon(t)
+
+	desired := makeCronDesired("sch_exec_detach01", "detach-exec", "0 9 * * *")
+	// Long-running command: if execute waited, this test would block for ~10s.
+	desired.Command = "sleep 10"
+	desired.Detach = true
+	trig, err := trigger.ParseTrigger(desired.Trigger)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	runtime := &model.RuntimeState{
+		ID:         "sch_exec_detach01",
+		NextFireAt: time.Now(),
+	}
+	if err := d.runtimeStore.Write(runtime); err != nil {
+		t.Fatal(err)
+	}
+
+	sched := &activeSchedule{
+		desired: desired,
+		runtime: runtime,
+		trigger: trig,
+	}
+
+	d.mu.Lock()
+	d.schedules["sch_exec_detach01"] = sched
+	d.mu.Unlock()
+
+	start := time.Now()
+	fired := d.execute(sched)
+	elapsed := time.Since(start)
+
+	if !fired {
+		t.Error("expected execute to return true for detached schedule")
+	}
+	if elapsed > 2*time.Second {
+		t.Errorf("expected detached execute to return quickly, took %s", elapsed)
+	}
+	if sched.runtime.FireCount != 1 {
+		t.Errorf("expected FireCount=1, got %d", sched.runtime.FireCount)
+	}
+	if sched.runtime.LastFiredAt == nil {
+		t.Error("expected LastFiredAt to be set")
+	}
+	if sched.runtime.LastExitCode != nil {
+		t.Errorf("expected LastExitCode to remain nil for detached, got %d", *sched.runtime.LastExitCode)
+	}
+}
+
+func TestExecute_DetachedMutexReleasedImmediately(t *testing.T) {
+	// The whole point of --detach is that the per-schedule mutex is released
+	// as soon as the spawn returns, so a nested `add --refresh` from within
+	// the callback doesn't see a "schedule currently firing" window.
+	d := newTestDaemon(t)
+
+	desired := makeCronDesired("sch_exec_detach02", "detach-mutex", "0 9 * * *")
+	desired.Command = "sleep 10"
+	desired.Detach = true
+	trig, err := trigger.ParseTrigger(desired.Trigger)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	runtime := &model.RuntimeState{
+		ID:         "sch_exec_detach02",
+		NextFireAt: time.Now(),
+	}
+	if err := d.runtimeStore.Write(runtime); err != nil {
+		t.Fatal(err)
+	}
+
+	sched := &activeSchedule{
+		desired: desired,
+		runtime: runtime,
+		trigger: trig,
+	}
+
+	d.mu.Lock()
+	d.schedules["sch_exec_detach02"] = sched
+	d.mu.Unlock()
+
+	d.execute(sched)
+
+	// After execute returns, the per-schedule mutex should be free.
+	if !sched.mu.TryLock() {
+		t.Error("expected per-schedule mutex to be released after detached execute")
+	} else {
+		sched.mu.Unlock()
+	}
+}
+
 func TestExecute_NonPollReturnsTrue(t *testing.T) {
 	d := newTestDaemon(t)
 

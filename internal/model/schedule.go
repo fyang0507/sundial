@@ -41,7 +41,8 @@ type DesiredState struct {
 	Status            ScheduleStatus   `json:"status"`
 	CompletionReason  CompletionReason `json:"completion_reason,omitempty"` // set when status=completed
 	RecreationCommand string           `json:"recreation_command,omitempty"`
-	Once              bool             `json:"once,omitempty"` // fire once then complete
+	Once              bool             `json:"once,omitempty"`   // fire once then complete
+	Detach            bool             `json:"detach,omitempty"` // fire-and-forget: spawn without waiting for exit
 }
 
 // RuntimeState is machine-local scheduling data managed by the daemon.
