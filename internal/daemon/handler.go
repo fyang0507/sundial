@@ -675,10 +675,19 @@ func (d *Daemon) refreshActiveSchedule(
 		return nil, d.gitPreconditionError(err)
 	}
 
-	// Update desired state fields.
+	// Update desired state fields. If a concurrent --once completion ran first
+	// under the same sched.mu (e.g. detached callback calls `add --refresh`
+	// mid-fire), existing.desired would carry Status=completed by the time we
+	// got here. `add --refresh` must revive the schedule in that case. Paused
+	// status is preserved — pausing is an explicit user action; refresh on a
+	// paused schedule should keep it paused (see TestHandleAdd_RefreshPreservePausedStatus).
 	existing.desired.Trigger = trigCfg
 	existing.desired.Once = p.Once
 	existing.desired.Detach = p.Detach
+	if existing.desired.Status == model.StatusCompleted {
+		existing.desired.Status = model.StatusActive
+		existing.desired.CompletionReason = ""
+	}
 	existing.desired.CreatedAt = time.Now() // reset for poll timeout recalculation
 	if p.Command != "" {
 		existing.desired.Command = p.Command
@@ -736,10 +745,13 @@ func (d *Daemon) refreshActiveSchedule(
 		}
 	}
 
-	// Update in-memory active schedule.
+	// Update in-memory active schedule. Re-add to d.schedules if a concurrent
+	// --once completion removed it while we were blocked on sched.mu; otherwise
+	// the refreshed schedule would only come back on the next reconcile.
 	d.mu.Lock()
 	existing.runtime = runtime
 	existing.trigger = trig
+	d.schedules[id] = existing
 	d.mu.Unlock()
 	d.signalWake()
 

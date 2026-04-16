@@ -6,13 +6,21 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/fyang0507/sundial/internal/model"
 )
 
 // GitOps provides git operations scoped to a specific repository path.
+//
+// Mutating operations (CommitSchedule, Push) are serialized via mu so that
+// concurrent writers — e.g. the scheduler goroutine completing a schedule and
+// an RPC handler refreshing the same schedule — cannot race on .git/index.lock
+// or ref locks. The mutex is held only for the duration of each method, not
+// across commit+push pairs, so a slow push does not block an unrelated commit.
 type GitOps struct {
 	repoPath string
+	mu       sync.Mutex
 }
 
 // NewGitOps returns a GitOps instance bound to the given repository path.
@@ -82,6 +90,9 @@ func (g *GitOps) CheckFilePreconditions(filePath string) error {
 // Uses git commit --only to ensure only the target file is included in the
 // commit, even if other files are staged.
 func (g *GitOps) CommitSchedule(filePath, message string) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
 	if _, err := runGit(g.repoPath, "add", "--", filePath); err != nil {
 		return fmt.Errorf("git add failed: %w", err)
 	}
@@ -93,6 +104,9 @@ func (g *GitOps) CommitSchedule(filePath, message string) error {
 
 // Push runs git push, returning any error. The caller decides retry policy.
 func (g *GitOps) Push() error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
 	if _, err := runGit(g.repoPath, "push"); err != nil {
 		return fmt.Errorf("git push failed: %w", err)
 	}

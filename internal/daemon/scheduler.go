@@ -84,9 +84,32 @@ func (d *Daemon) fireDueSchedules() {
 
 	for _, sched := range due {
 		sched := sched // capture loop variable
+		// Hold sched.mu across the whole fire cycle (execute + advance) so that
+		// repeated runLoop ticks while the cycle is in flight skip via TryLock
+		// instead of queuing behind it. Without this, a --once + --detach +
+		// poll schedule hot-loops: execute releases the mutex on its fast
+		// detached-spawn return, the next tick (NextFireAt is still in the
+		// past until advanceSchedule deletes the schedule from d.schedules)
+		// fires another goroutine, which then queues behind advanceSchedule,
+		// and the queue drains by running completeSchedule N times.
+		if !sched.mu.TryLock() {
+			log.Printf("schedule %s (%s): skipping, previous fire still in progress",
+				sched.desired.ID, sched.desired.Name)
+			continue
+		}
+		// Zero NextFireAt so soonestFire skips this schedule until the fire
+		// goroutine's advanceSchedule recomputes it (or deletes the schedule
+		// entirely for --once completion). Without this, the next runLoop
+		// tick re-sees a past NextFireAt, tries to fire again, fails TryLock
+		// (we still hold sched.mu), logs "skipping", and tight-loops the CPU
+		// until the fire goroutine finishes.
+		d.mu.Lock()
+		sched.runtime.NextFireAt = time.Time{}
+		d.mu.Unlock()
 		d.wg.Add(1)
 		go func() {
 			defer d.wg.Done()
+			defer sched.mu.Unlock()
 			d.execute(sched)
 			d.advanceSchedule(sched)
 			d.signalWake()
@@ -99,6 +122,10 @@ func (d *Daemon) fireDueSchedules() {
 // and persists the updated runtime state. For --once schedules that have
 // already fired, it marks the schedule as completed. For poll schedules
 // whose timeout has expired, it marks them as completed with reason "timeout".
+//
+// Caller (fireDueSchedules) holds sched.mu across execute + advanceSchedule,
+// so desiredStore.Write / runtimeStore.Write here cannot race with a
+// concurrent RPC mutator (refreshActiveSchedule) of the same schedule.
 func (d *Daemon) advanceSchedule(sched *activeSchedule) {
 	if sched.desired.Once && sched.runtime.FireCount > 0 {
 		d.completeSchedule(sched, model.CompletionTriggered)
