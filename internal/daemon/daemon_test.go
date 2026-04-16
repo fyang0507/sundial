@@ -2,12 +2,41 @@ package daemon
 
 import (
 	"encoding/json"
+	"os/exec"
 	"testing"
 	"time"
 
 	"github.com/fyang0507/sundial/internal/model"
 	"github.com/fyang0507/sundial/internal/trigger"
 )
+
+// newTestDaemonWithGit creates a test daemon whose data repo is a real git
+// repository, so that handlers calling gitOps (commit, push, etc.) succeed.
+func newTestDaemonWithGit(t *testing.T) *Daemon {
+	t.Helper()
+	d := newTestDaemon(t)
+	initTestGitRepo(t, d.cfg.DataRepo)
+	return d
+}
+
+// initTestGitRepo initializes a git repo with an initial commit.
+func initTestGitRepo(t *testing.T, dir string) {
+	t.Helper()
+	cmds := [][]string{
+		{"git", "init"},
+		{"git", "config", "user.email", "test@sundial.dev"},
+		{"git", "config", "user.name", "Sundial Test"},
+		{"git", "commit", "--allow-empty", "-m", "init"},
+	}
+	for _, args := range cmds {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = dir
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git command %v failed: %v\n%s", args, err, out)
+		}
+	}
+}
 
 func TestHandleList_Empty(t *testing.T) {
 	d := newTestDaemon(t)
@@ -736,5 +765,166 @@ func TestHandleAdd_ExactTakesPriorityOverFuzzy(t *testing.T) {
 	}
 	if dupInfo.MatchType != "exact_command" {
 		t.Errorf("expected exact match to take priority, got %q", dupInfo.MatchType)
+	}
+}
+
+func TestFindCompletedByName(t *testing.T) {
+	d := newTestDaemon(t)
+
+	// Write a completed desired state.
+	desired := makePollDesired("sch_fn01", "watch-replies", "check-cmd", "2m")
+	desired.Status = model.StatusCompleted
+	desired.Command = "echo fire"
+	if err := d.desiredStore.Write(desired); err != nil {
+		t.Fatal(err)
+	}
+
+	// Should find by name.
+	found := d.findCompletedByName("watch-replies")
+	if found == nil {
+		t.Fatal("expected to find completed schedule by name")
+	}
+	if found.ID != "sch_fn01" {
+		t.Errorf("expected ID sch_fn01, got %s", found.ID)
+	}
+
+	// Should not find for different name.
+	notFound := d.findCompletedByName("other-name")
+	if notFound != nil {
+		t.Error("expected no match for different name")
+	}
+
+	// Should not find active schedules.
+	active := makeCronDesired("sch_fn02", "active-sched", "0 9 * * *")
+	if err := d.desiredStore.Write(active); err != nil {
+		t.Fatal(err)
+	}
+	notFound = d.findCompletedByName("active-sched")
+	if notFound != nil {
+		t.Error("expected no match for active schedule")
+	}
+
+	// Empty name should return nil.
+	notFound = d.findCompletedByName("")
+	if notFound != nil {
+		t.Error("expected nil for empty name")
+	}
+}
+
+func TestReactivation_ByNameWithUpdatedCommand(t *testing.T) {
+	d := newTestDaemonWithGit(t)
+
+	// Write a completed schedule with a specific name and command.
+	desired := makePollDesired("sch_rn01", "outreach-watch", "check-cmd", "2m")
+	desired.Status = model.StatusCompleted
+	desired.Command = "echo old-callback"
+	if err := d.desiredStore.Write(desired); err != nil {
+		t.Fatal(err)
+	}
+
+	// Re-add with same name but different command.
+	params := model.AddParams{
+		Type:           model.TriggerTypePoll,
+		TriggerCommand: "check-cmd",
+		Interval:       "2m",
+		Timeout:        "72h",
+		Command:        "echo new-callback",
+		Name:           "outreach-watch",
+	}
+
+	result, rpcErr := d.handleAdd(params)
+	if rpcErr != nil {
+		t.Fatalf("unexpected error: %v", rpcErr.Message)
+	}
+
+	// Should reactivate the same schedule, not create new.
+	if result.ID != "sch_rn01" {
+		t.Errorf("expected reactivation of sch_rn01, got new ID %s", result.ID)
+	}
+	if result.Status != "reactivated" {
+		t.Errorf("expected status 'reactivated', got %q", result.Status)
+	}
+
+	// Command should be updated.
+	ds, err := d.desiredStore.Read("sch_rn01")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ds.Command != "echo new-callback" {
+		t.Errorf("expected command to be updated to 'echo new-callback', got %q", ds.Command)
+	}
+	if ds.Status != model.StatusActive {
+		t.Errorf("expected status 'active', got %q", ds.Status)
+	}
+}
+
+func TestReactivation_ByCommandFallback(t *testing.T) {
+	d := newTestDaemonWithGit(t)
+
+	// Write a completed schedule.
+	desired := makePollDesired("sch_rc01", "old-name", "check-cmd", "2m")
+	desired.Status = model.StatusCompleted
+	desired.Command = "echo fire"
+	if err := d.desiredStore.Write(desired); err != nil {
+		t.Fatal(err)
+	}
+
+	// Re-add with same command but no name — should fall back to command match.
+	params := model.AddParams{
+		Type:           model.TriggerTypePoll,
+		TriggerCommand: "check-cmd",
+		Interval:       "2m",
+		Timeout:        "72h",
+		Command:        "echo fire",
+	}
+
+	result, rpcErr := d.handleAdd(params)
+	if rpcErr != nil {
+		t.Fatalf("unexpected error: %v", rpcErr.Message)
+	}
+
+	if result.ID != "sch_rc01" {
+		t.Errorf("expected reactivation of sch_rc01, got %s", result.ID)
+	}
+	if result.Status != "reactivated" {
+		t.Errorf("expected status 'reactivated', got %q", result.Status)
+	}
+}
+
+func TestReactivation_NameTakesPriorityOverCommand(t *testing.T) {
+	d := newTestDaemonWithGit(t)
+
+	// Two completed schedules with same command but different names.
+	ds1 := makePollDesired("sch_pri01", "name-alpha", "check-cmd", "2m")
+	ds1.Status = model.StatusCompleted
+	ds1.Command = "echo shared-cmd"
+	ds2 := makePollDesired("sch_pri02", "name-beta", "check-cmd", "2m")
+	ds2.Status = model.StatusCompleted
+	ds2.Command = "echo shared-cmd"
+
+	for _, ds := range []*model.DesiredState{ds1, ds2} {
+		if err := d.desiredStore.Write(ds); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Re-add targeting name-beta — should reactivate sch_pri02 by name,
+	// not whichever one findCompletedByCommand happens to return first.
+	params := model.AddParams{
+		Type:           model.TriggerTypePoll,
+		TriggerCommand: "check-cmd",
+		Interval:       "2m",
+		Timeout:        "72h",
+		Command:        "echo shared-cmd",
+		Name:           "name-beta",
+	}
+
+	result, rpcErr := d.handleAdd(params)
+	if rpcErr != nil {
+		t.Fatalf("unexpected error: %v", rpcErr.Message)
+	}
+
+	if result.ID != "sch_pri02" {
+		t.Errorf("expected name match to reactivate sch_pri02, got %s", result.ID)
 	}
 }
