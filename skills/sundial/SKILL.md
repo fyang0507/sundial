@@ -7,6 +7,16 @@ description: Scheduler service for agent. Cron, solar, and poll triggers.
 
 CLI scheduler with cron, solar, and poll triggers. A background daemon manages all schedules over IPC. All commands accept `--json`.
 
+## Setup
+
+If `which sundial` fails or `sundial health` shows the daemon is not running, start it from the sundial repo:
+
+```bash
+cd <sundial-repo> && make start
+```
+
+This builds, installs, and starts the daemon. Once running, all `sundial` commands work from any directory.
+
 ## Commands
 
 | Action | Command |
@@ -62,7 +72,7 @@ sundial add --type poll \
   --name "wait for condition"
 ```
 
-Required flags: `--trigger` (condition command), `--interval` (check frequency, min 30s).
+Required flags: `--trigger` (condition command), `--interval` (check frequency, min 30s), `--timeout` (max lifetime, e.g. `72h`).
 
 The trigger command receives `SUNDIAL_SCHEDULE_ID` and `SUNDIAL_LAST_FIRED_AT` env vars.
 
@@ -75,8 +85,29 @@ The trigger command receives `SUNDIAL_SCHEDULE_ID` and `SUNDIAL_LAST_FIRED_AT` e
 - `--once` — fire once then complete the schedule
 - `--dry-run` — validate and preview without creating
 - `--force` — skip duplicate detection (exact and fuzzy)
+- `--refresh` — update an existing schedule in place if name matches (requires `--name`; mutually exclusive with `--force`)
 
 Duplicate detection catches both exact matches (same name or same command) and fuzzy matches (similar name via Levenshtein distance, or one command is a substring of another). Use `--force` to override.
+
+### Refreshing Schedules
+
+Use `--refresh` to atomically update an active schedule without removing it first. This is useful for resetting poll timeouts or changing trigger parameters while preserving the schedule ID.
+
+```bash
+# Original watcher with 72h timeout
+sundial add --type poll --trigger "check-reply" --interval 2m --timeout 72h --once \
+  --command "notify agent" --name "outreach-watch"
+
+# Later: refresh with a new 72h countdown
+sundial add --type poll --trigger "check-reply" --interval 2m --timeout 72h --once \
+  --command "notify agent" --name "outreach-watch" --refresh
+```
+
+Behavior:
+- If an active schedule with the same `--name` exists → updates it in place (status: `"refreshed"`, same ID).
+- If no match → creates a new schedule (upsert semantics).
+- Paused schedules are updated but stay paused.
+- `CreatedAt` is reset, so poll timeouts restart from now.
 
 Always `--dry-run` first when building a schedule from natural language.
 

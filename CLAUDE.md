@@ -6,11 +6,28 @@ Agent-first CLI scheduler with cron, solar, and poll triggers. Go project target
 
 ```bash
 make build                    # build binary
-make install                  # build and install to /usr/local/bin
+make install                  # build and install to PATH
+make start                    # build, install, and start daemon (uses config.yaml in repo root)
+make start launchd=1          # same + register with launchd for auto-start on login
+make stop                     # stop the daemon
+make restart                  # stop + start
 make test                     # run all tests
 make vet                      # static analysis
 make clean                    # remove local binary
 ```
+
+### Setup
+
+Sundial requires a running daemon. If `sundial health` shows the daemon is not running:
+
+```bash
+# From this repo's root:
+make start
+```
+
+This builds the binary, installs it, starts the daemon using `config.yaml` in this repo, and runs a health check. The only required config field is `data_repo` (already set in `config.yaml`).
+
+CLI commands (`sundial add`, `sundial list`, etc.) connect to the daemon over a well-known socket path and do not need a config file.
 
 ## Architecture
 
@@ -42,7 +59,7 @@ internal/
 - **Single-writer architecture**: daemon owns all schedule state mutation. CLI sends RPCs only.
 - **Two-store state model**: desired state in data repo (git-tracked), runtime state local.
 - **Three trigger types**: cron (static schedule), solar (sun-position-based), poll (condition-gated periodic check).
-- **Schedule lifecycle**: active → paused (via `pause`) → active (via `unpause`); active → completed (via `--once`) or removed. Completed schedules auto-reactivate on matching `add`.
+- **Schedule lifecycle**: active → paused (via `pause`) → active (via `unpause`); active → completed (via `--once`) or removed. Completed schedules auto-reactivate on matching `add`. Active schedules can be updated in place via `--refresh`.
 - **Fuzzy duplicate detection**: `sundial add` checks exact name/command matches first, then fuzzy (Levenshtein for names, substring for commands). `--force` bypasses both.
 - **Agent-first CLI**: non-interactive, --json flag, fail-fast with examples, --dry-run.
 

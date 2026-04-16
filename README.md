@@ -11,24 +11,25 @@ Sundial lets you schedule recurring shell commands using standard cron expressio
 **Prerequisites:** Go 1.21+, macOS, a git repository for schedule data.
 
 ```bash
-# Build and install to PATH
-make install
-
-# Create config (data_repo is the only required field)
-cp config.yaml.example config.yaml
 # Edit config.yaml: set data_repo to the path of your git data repo
+vim config.yaml
 
-# Install the daemon as a launchd service
-sundial install
-
-# Verify the daemon is running
-sundial health
+# Build, install, and start the daemon
+make start
 
 # Create your first schedule
 sundial add --type cron --cron "0 9 * * 1-5" \
   --command "cd ~/project && codex exec 'daily standup'" \
   --name "weekday standup"
 ```
+
+`make start` builds the binary, installs it to PATH, starts the daemon using `config.yaml` in the repo root, and runs a health check. To also register the daemon with launchd (auto-start on login):
+
+```bash
+make start launchd=1
+```
+
+Other targets: `make stop`, `make restart`.
 
 ## Commands
 
@@ -97,6 +98,18 @@ The trigger command receives `SUNDIAL_SCHEDULE_ID` and `SUNDIAL_LAST_FIRED_AT` (
 
 `--once` means "fire the command once, then mark the schedule as completed." Without it, the poll trigger keeps running indefinitely -- check, fire, check, fire. Completed schedules auto-reactivate if `sundial add` is called again with the same command.
 
+To refresh an active poll watcher's timeout without removing it, use `--refresh`:
+
+```bash
+sundial add --type poll \
+  --trigger 'outreach reply-check --contact-id c_abc123 --channel sms' \
+  --interval 2m --timeout 72h --once \
+  --command "cd ~/project && codex exec 'Continue campaign.'" \
+  --name "await reply from Dr. Smith" --refresh
+```
+
+`--refresh` updates the existing schedule in place (same ID, fresh timeout countdown) if a schedule with the same `--name` already exists. If no match exists, it creates a new one.
+
 ## Configuration
 
 Place `config.yaml` in the project root alongside the sundial binary (or set `SUNDIAL_CONFIG` / pass `--config`). The only required field is `data_repo` -- everything else has sensible defaults.
@@ -149,6 +162,7 @@ Key agent-friendly features:
 - Non-interactive -- no prompts, fail-fast with actionable error messages
 - Consistent exit codes (0 = success, 1 = error)
 - Fuzzy duplicate detection catches near-duplicate names (Levenshtein) and commands (substring) with `--force` override
+- `--refresh` for atomic in-place updates to active schedules (upsert by name)
 
 Design follows the [CLI-for-Agents](https://github.com/cursor/plugins/blob/main/cli-for-agent/skills/cli-for-agents/SKILL.md) principles.
 
@@ -156,7 +170,11 @@ Design follows the [CLI-for-Agents](https://github.com/cursor/plugins/blob/main/
 
 ```bash
 make build               # build binary
-make install             # build and install to /usr/local/bin
+make install             # build and install to PATH
+make start               # build, install, start daemon
+make start launchd=1     # same + register with launchd
+make stop                # stop the daemon
+make restart             # stop + start
 make test                # run all tests
 make vet                 # static analysis
 make clean               # remove local binary
@@ -181,18 +199,6 @@ internal/
 ```
 
 See [CLAUDE.md](CLAUDE.md) for the full package map and agent-facing development guide.
-
-### Running the daemon locally
-
-```bash
-# Start the daemon in the foreground for testing
-sundial daemon --config config.yaml
-
-# In another terminal, interact via the CLI
-sundial health
-sundial add --type cron --cron "* * * * *" --command "echo tick" --name "test"
-sundial list
-```
 
 ## Status
 

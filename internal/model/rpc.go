@@ -64,7 +64,8 @@ type AddParams struct {
 	Name           string      `json:"name,omitempty"`
 	UserRequest    string      `json:"user_request,omitempty"`
 	Force          bool        `json:"force,omitempty"`
-	Once           bool        `json:"once,omitempty"` // fire once then complete
+	Refresh        bool        `json:"refresh,omitempty"` // update existing schedule in place if name matches
+	Once           bool        `json:"once,omitempty"`    // fire once then complete
 }
 
 // AddResult is returned by a successful "add" RPC.

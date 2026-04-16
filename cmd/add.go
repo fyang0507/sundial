@@ -54,6 +54,7 @@ var (
 	addUserRequest    string
 	addDryRun         bool
 	addForce          bool
+	addRefresh        bool
 	addOnce           bool
 	addLatSet         bool
 	addLonSet         bool
@@ -78,6 +79,7 @@ func init() {
 	addCmd.Flags().StringVar(&addUserRequest, "user-request", "", "original user request that generated this schedule")
 	addCmd.Flags().BoolVar(&addDryRun, "dry-run", false, "validate and preview without creating the schedule")
 	addCmd.Flags().BoolVar(&addForce, "force", false, "skip duplicate detection")
+	addCmd.Flags().BoolVar(&addRefresh, "refresh", false, "update existing schedule if name matches (requires --name)")
 	addCmd.Flags().BoolVar(&addOnce, "once", false, "fire once then complete the schedule")
 }
 
@@ -92,6 +94,13 @@ func runAdd(cmd *cobra.Command, args []string) {
 	}
 	if addType == "" {
 		addError("--type is required (cron or solar)")
+	}
+
+	if addRefresh && addForce {
+		addError("--refresh and --force are mutually exclusive")
+	}
+	if addRefresh && addName == "" {
+		addError("--refresh requires --name")
 	}
 
 	switch model.TriggerType(addType) {
@@ -238,6 +247,7 @@ func buildAddParams() model.AddParams {
 		Name:        addName,
 		UserRequest: addUserRequest,
 		Force:       addForce,
+		Refresh:     addRefresh,
 		Once:        addOnce,
 	}
 
