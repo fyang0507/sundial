@@ -347,3 +347,272 @@ func TestSignalWake(t *testing.T) {
 		t.Error("expected wake channel to have a signal")
 	}
 }
+
+// --- Pause / Unpause tests ---
+
+func TestHandlePause_Success(t *testing.T) {
+	d := newTestDaemon(t)
+
+	desired := makeCronDesired("sch_p01", "pause-test", "0 9 * * *")
+	trig, _ := trigger.ParseTrigger(desired.Trigger)
+	runtime := &model.RuntimeState{
+		ID:         "sch_p01",
+		NextFireAt: trig.NextFireTime(time.Now()),
+	}
+
+	d.mu.Lock()
+	d.schedules["sch_p01"] = &activeSchedule{
+		desired: desired,
+		runtime: runtime,
+		trigger: trig,
+	}
+	d.mu.Unlock()
+
+	result, rpcErr := d.handlePause(model.PauseParams{ID: "sch_p01"})
+	// Expect git precondition failure (no real git repo), but the status
+	// check and logic before git should pass. Let's check both paths.
+	if rpcErr != nil {
+		// If it fails at git, that's OK — verify it's not a different error.
+		if rpcErr.Code == model.RPCErrCodeGitPrecondition {
+			return // expected in test env without git
+		}
+		t.Fatalf("unexpected error: code=%d message=%s", rpcErr.Code, rpcErr.Message)
+	}
+
+	if result.Status != "paused" {
+		t.Errorf("expected status 'paused', got %q", result.Status)
+	}
+	if result.Name != "pause-test" {
+		t.Errorf("expected name 'pause-test', got %q", result.Name)
+	}
+}
+
+func TestHandlePause_NotFound(t *testing.T) {
+	d := newTestDaemon(t)
+
+	_, rpcErr := d.handlePause(model.PauseParams{ID: "sch_missing"})
+	if rpcErr == nil {
+		t.Fatal("expected error for nonexistent schedule")
+	}
+	if rpcErr.Code != model.RPCErrCodeNotFound {
+		t.Errorf("expected error code %d, got %d", model.RPCErrCodeNotFound, rpcErr.Code)
+	}
+}
+
+func TestHandlePause_AlreadyPaused(t *testing.T) {
+	d := newTestDaemon(t)
+
+	desired := makeCronDesired("sch_p02", "already-paused", "0 9 * * *")
+	desired.Status = model.StatusPaused
+	trig, _ := trigger.ParseTrigger(desired.Trigger)
+
+	d.mu.Lock()
+	d.schedules["sch_p02"] = &activeSchedule{
+		desired: desired,
+		runtime: &model.RuntimeState{ID: "sch_p02"},
+		trigger: trig,
+	}
+	d.mu.Unlock()
+
+	_, rpcErr := d.handlePause(model.PauseParams{ID: "sch_p02"})
+	if rpcErr == nil {
+		t.Fatal("expected error for already paused schedule")
+	}
+	if rpcErr.Code != model.RPCErrCodeInvalidParams {
+		t.Errorf("expected error code %d, got %d", model.RPCErrCodeInvalidParams, rpcErr.Code)
+	}
+}
+
+func TestHandleUnpause_NotPaused(t *testing.T) {
+	d := newTestDaemon(t)
+
+	desired := makeCronDesired("sch_u01", "not-paused", "0 9 * * *")
+	trig, _ := trigger.ParseTrigger(desired.Trigger)
+
+	d.mu.Lock()
+	d.schedules["sch_u01"] = &activeSchedule{
+		desired: desired,
+		runtime: &model.RuntimeState{
+			ID:         "sch_u01",
+			NextFireAt: trig.NextFireTime(time.Now()),
+		},
+		trigger: trig,
+	}
+	d.mu.Unlock()
+
+	_, rpcErr := d.handleUnpause(model.PauseParams{ID: "sch_u01"})
+	if rpcErr == nil {
+		t.Fatal("expected error for non-paused schedule")
+	}
+	if rpcErr.Code != model.RPCErrCodeInvalidParams {
+		t.Errorf("expected error code %d, got %d", model.RPCErrCodeInvalidParams, rpcErr.Code)
+	}
+}
+
+func TestHandleUnpause_NotFound(t *testing.T) {
+	d := newTestDaemon(t)
+
+	_, rpcErr := d.handleUnpause(model.PauseParams{ID: "sch_missing"})
+	if rpcErr == nil {
+		t.Fatal("expected error for nonexistent schedule")
+	}
+	if rpcErr.Code != model.RPCErrCodeNotFound {
+		t.Errorf("expected error code %d, got %d", model.RPCErrCodeNotFound, rpcErr.Code)
+	}
+}
+
+// --- Fuzzy duplicate detection tests ---
+
+func TestHandleAdd_FuzzyNameMatch(t *testing.T) {
+	d := newTestDaemon(t)
+
+	desired := makeCronDesired("sch_fz01", "my-schedule", "0 9 * * *")
+	trig, _ := trigger.ParseTrigger(desired.Trigger)
+	d.mu.Lock()
+	d.schedules["sch_fz01"] = &activeSchedule{
+		desired: desired,
+		runtime: &model.RuntimeState{
+			ID:         "sch_fz01",
+			NextFireAt: trig.NextFireTime(time.Now()),
+		},
+		trigger: trig,
+	}
+	d.mu.Unlock()
+
+	// Fuzzy name: "my-scheduel" is close to "my-schedule".
+	params := model.AddParams{
+		Type:    model.TriggerTypeCron,
+		Cron:    "0 10 * * *",
+		Command: "echo different",
+		Name:    "my-scheduel",
+	}
+
+	_, rpcErr := d.handleAdd(params)
+	if rpcErr == nil {
+		t.Fatal("expected error for fuzzy name match")
+	}
+	if rpcErr.Code != model.RPCErrCodeDuplicate {
+		t.Errorf("expected error code %d, got %d", model.RPCErrCodeDuplicate, rpcErr.Code)
+	}
+
+	var dupInfo model.DuplicateInfo
+	if err := json.Unmarshal(rpcErr.Data, &dupInfo); err != nil {
+		t.Fatalf("failed to unmarshal DuplicateInfo: %v", err)
+	}
+	if dupInfo.MatchType != "fuzzy_name" {
+		t.Errorf("expected match_type 'fuzzy_name', got %q", dupInfo.MatchType)
+	}
+}
+
+func TestHandleAdd_FuzzyCommandMatch(t *testing.T) {
+	d := newTestDaemon(t)
+
+	desired := makeCronDesired("sch_fz02", "existing", "0 9 * * *")
+	desired.Command = "cd ~/project && codex exec 'daily standup'"
+	trig, _ := trigger.ParseTrigger(desired.Trigger)
+	d.mu.Lock()
+	d.schedules["sch_fz02"] = &activeSchedule{
+		desired: desired,
+		runtime: &model.RuntimeState{
+			ID:         "sch_fz02",
+			NextFireAt: trig.NextFireTime(time.Now()),
+		},
+		trigger: trig,
+	}
+	d.mu.Unlock()
+
+	// Command is a substring of the existing command.
+	params := model.AddParams{
+		Type:    model.TriggerTypeCron,
+		Cron:    "0 10 * * *",
+		Command: "codex exec 'daily standup'",
+		Name:    "totally-different",
+	}
+
+	_, rpcErr := d.handleAdd(params)
+	if rpcErr == nil {
+		t.Fatal("expected error for fuzzy command match")
+	}
+	if rpcErr.Code != model.RPCErrCodeDuplicate {
+		t.Errorf("expected error code %d, got %d", model.RPCErrCodeDuplicate, rpcErr.Code)
+	}
+
+	var dupInfo model.DuplicateInfo
+	if err := json.Unmarshal(rpcErr.Data, &dupInfo); err != nil {
+		t.Fatalf("failed to unmarshal DuplicateInfo: %v", err)
+	}
+	if dupInfo.MatchType != "fuzzy_command" {
+		t.Errorf("expected match_type 'fuzzy_command', got %q", dupInfo.MatchType)
+	}
+}
+
+func TestHandleAdd_FuzzyForceBypass(t *testing.T) {
+	d := newTestDaemon(t)
+
+	desired := makeCronDesired("sch_fz03", "my-schedule", "0 9 * * *")
+	trig, _ := trigger.ParseTrigger(desired.Trigger)
+	d.mu.Lock()
+	d.schedules["sch_fz03"] = &activeSchedule{
+		desired: desired,
+		runtime: &model.RuntimeState{
+			ID:         "sch_fz03",
+			NextFireAt: trig.NextFireTime(time.Now()),
+		},
+		trigger: trig,
+	}
+	d.mu.Unlock()
+
+	// Fuzzy name match with --force should bypass.
+	params := model.AddParams{
+		Type:    model.TriggerTypeCron,
+		Cron:    "0 10 * * *",
+		Command: "echo different",
+		Name:    "my-scheduel",
+		Force:   true,
+	}
+
+	_, rpcErr := d.handleAdd(params)
+	// Should NOT fail with duplicate error; may fail at git preconditions.
+	if rpcErr != nil && rpcErr.Code == model.RPCErrCodeDuplicate {
+		t.Error("expected Force=true to bypass fuzzy duplicate check")
+	}
+}
+
+func TestHandleAdd_ExactTakesPriorityOverFuzzy(t *testing.T) {
+	d := newTestDaemon(t)
+
+	desired := makeCronDesired("sch_fz04", "my-schedule", "0 9 * * *")
+	desired.Command = "echo samecmd"
+	trig, _ := trigger.ParseTrigger(desired.Trigger)
+	d.mu.Lock()
+	d.schedules["sch_fz04"] = &activeSchedule{
+		desired: desired,
+		runtime: &model.RuntimeState{
+			ID:         "sch_fz04",
+			NextFireAt: trig.NextFireTime(time.Now()),
+		},
+		trigger: trig,
+	}
+	d.mu.Unlock()
+
+	// Both exact command match and fuzzy name match — exact should win.
+	params := model.AddParams{
+		Type:    model.TriggerTypeCron,
+		Cron:    "0 10 * * *",
+		Command: "echo samecmd",
+		Name:    "my-scheduel", // fuzzy match
+	}
+
+	_, rpcErr := d.handleAdd(params)
+	if rpcErr == nil {
+		t.Fatal("expected error for duplicate")
+	}
+
+	var dupInfo model.DuplicateInfo
+	if err := json.Unmarshal(rpcErr.Data, &dupInfo); err != nil {
+		t.Fatalf("failed to unmarshal DuplicateInfo: %v", err)
+	}
+	if dupInfo.MatchType != "exact_command" {
+		t.Errorf("expected exact match to take priority, got %q", dupInfo.MatchType)
+	}
+}

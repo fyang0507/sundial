@@ -10,6 +10,7 @@ import (
 
 	"github.com/fyang0507/sundial/internal/config"
 	"github.com/fyang0507/sundial/internal/model"
+	"github.com/fyang0507/sundial/internal/similarity"
 	"github.com/fyang0507/sundial/internal/trigger"
 )
 
@@ -36,6 +37,26 @@ func (d *Daemon) Handle(method string, params json.RawMessage) (interface{}, *mo
 			}
 		}
 		return d.handleRemove(p)
+
+	case model.MethodPause:
+		var p model.PauseParams
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, &model.RPCError{
+				Code:    model.RPCErrCodeInvalidParams,
+				Message: "invalid pause params: " + err.Error(),
+			}
+		}
+		return d.handlePause(p)
+
+	case model.MethodUnpause:
+		var p model.PauseParams
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, &model.RPCError{
+				Code:    model.RPCErrCodeInvalidParams,
+				Message: "invalid unpause params: " + err.Error(),
+			}
+		}
+		return d.handleUnpause(p)
 
 	case model.MethodList:
 		return d.handleList()
@@ -97,32 +118,67 @@ func (d *Daemon) handleAdd(p model.AddParams) (*model.AddResult, *model.RPCError
 		}
 	}
 
-	// 3. Check duplicates against active schedules.
+	// 3. Check duplicates against active schedules (exact then fuzzy).
 	d.mu.RLock()
-	for _, sched := range d.schedules {
-		if !p.Force {
-			var dupInfo *model.DuplicateInfo
+	if !p.Force {
+		var fuzzyDup *model.DuplicateInfo
+		for _, sched := range d.schedules {
+			// Exact checks first — these take priority.
 			if p.Name != "" && sched.desired.Name == p.Name {
-				dupInfo = &model.DuplicateInfo{
+				d.mu.RUnlock()
+				dupInfo := &model.DuplicateInfo{
 					ExistingID:   sched.desired.ID,
 					ExistingName: sched.desired.Name,
 					MatchType:    "exact_name",
 				}
-			} else if sched.desired.Command == p.Command {
-				dupInfo = &model.DuplicateInfo{
-					ExistingID:   sched.desired.ID,
-					ExistingName: sched.desired.Name,
-					MatchType:    "exact_command",
-				}
-			}
-			if dupInfo != nil {
-				d.mu.RUnlock()
 				data, _ := json.Marshal(dupInfo)
 				return nil, &model.RPCError{
 					Code:    model.RPCErrCodeDuplicate,
 					Message: fmt.Sprintf("duplicate schedule: %s match with %s", dupInfo.MatchType, dupInfo.ExistingID),
 					Data:    data,
 				}
+			}
+			if sched.desired.Command == p.Command {
+				d.mu.RUnlock()
+				dupInfo := &model.DuplicateInfo{
+					ExistingID:   sched.desired.ID,
+					ExistingName: sched.desired.Name,
+					MatchType:    "exact_command",
+				}
+				data, _ := json.Marshal(dupInfo)
+				return nil, &model.RPCError{
+					Code:    model.RPCErrCodeDuplicate,
+					Message: fmt.Sprintf("duplicate schedule: %s match with %s", dupInfo.MatchType, dupInfo.ExistingID),
+					Data:    data,
+				}
+			}
+
+			// Fuzzy checks — keep first match found.
+			if fuzzyDup == nil {
+				if p.Name != "" && similarity.IsFuzzyNameMatch(p.Name, sched.desired.Name) {
+					fuzzyDup = &model.DuplicateInfo{
+						ExistingID:   sched.desired.ID,
+						ExistingName: sched.desired.Name,
+						MatchType:    "fuzzy_name",
+					}
+				} else if similarity.IsFuzzyCommandMatch(p.Command, sched.desired.Command) {
+					fuzzyDup = &model.DuplicateInfo{
+						ExistingID:   sched.desired.ID,
+						ExistingName: sched.desired.Name,
+						MatchType:    "fuzzy_command",
+					}
+				}
+			}
+		}
+
+		// Report fuzzy match only if no exact match was found.
+		if fuzzyDup != nil {
+			d.mu.RUnlock()
+			data, _ := json.Marshal(fuzzyDup)
+			return nil, &model.RPCError{
+				Code:    model.RPCErrCodeDuplicate,
+				Message: fmt.Sprintf("duplicate schedule: %s match with %s", fuzzyDup.MatchType, fuzzyDup.ExistingID),
+				Data:    data,
 			}
 		}
 	}
@@ -326,6 +382,163 @@ func (d *Daemon) handleRemove(p model.RemoveParams) (*model.RemoveResult, *model
 	}
 
 	return result, nil
+}
+
+// handlePause pauses an active schedule so it stops firing.
+func (d *Daemon) handlePause(p model.PauseParams) (*model.PauseResult, *model.RPCError) {
+	d.mu.RLock()
+	sched, ok := d.schedules[p.ID]
+	d.mu.RUnlock()
+
+	if !ok {
+		return nil, &model.RPCError{
+			Code:    model.RPCErrCodeNotFound,
+			Message: fmt.Sprintf("schedule %s not found", p.ID),
+		}
+	}
+
+	if sched.desired.Status == model.StatusPaused {
+		return nil, &model.RPCError{
+			Code:    model.RPCErrCodeInvalidParams,
+			Message: fmt.Sprintf("schedule %s is already paused", p.ID),
+		}
+	}
+
+	// Check git preconditions.
+	if err := d.gitOps.CheckRepoPreconditions(); err != nil {
+		return nil, &model.RPCError{
+			Code:    model.RPCErrCodeGitPrecondition,
+			Message: err.Error(),
+		}
+	}
+
+	// Update desired state to paused.
+	sched.desired.Status = model.StatusPaused
+	if err := d.desiredStore.Write(sched.desired); err != nil {
+		return nil, &model.RPCError{
+			Code:    model.RPCErrCodeInternal,
+			Message: "failed to write paused state: " + err.Error(),
+		}
+	}
+
+	// Git commit.
+	filePath := d.desiredStore.FilePath(p.ID)
+	commitMsg := fmt.Sprintf("sundial: pause schedule %s (%s)", p.ID, sched.desired.Name)
+	if err := d.gitOps.CommitSchedule(filePath, commitMsg); err != nil {
+		return nil, &model.RPCError{
+			Code:    model.RPCErrCodeGitPrecondition,
+			Message: "git commit failed: " + err.Error(),
+		}
+	}
+
+	// Zero out NextFireAt so the schedule won't fire.
+	d.mu.Lock()
+	sched.runtime.NextFireAt = time.Time{}
+	d.mu.Unlock()
+
+	if err := d.runtimeStore.Write(sched.runtime); err != nil {
+		log.Printf("WARN: schedule %s: failed to persist runtime after pause: %v", p.ID, err)
+	}
+
+	// Git push (best-effort).
+	var warning string
+	if err := d.gitOps.Push(); err != nil {
+		log.Printf("WARN: git push failed after pause: %v", err)
+		warning = "git push failed: " + err.Error()
+	}
+
+	d.signalWake()
+
+	return &model.PauseResult{
+		ID:        p.ID,
+		Name:      sched.desired.Name,
+		Status:    "paused",
+		Committed: commitMsg,
+		Warning:   warning,
+	}, nil
+}
+
+// handleUnpause resumes a paused schedule.
+func (d *Daemon) handleUnpause(p model.PauseParams) (*model.PauseResult, *model.RPCError) {
+	d.mu.RLock()
+	sched, ok := d.schedules[p.ID]
+	d.mu.RUnlock()
+
+	if !ok {
+		return nil, &model.RPCError{
+			Code:    model.RPCErrCodeNotFound,
+			Message: fmt.Sprintf("schedule %s not found", p.ID),
+		}
+	}
+
+	if sched.desired.Status != model.StatusPaused {
+		return nil, &model.RPCError{
+			Code:    model.RPCErrCodeInvalidParams,
+			Message: fmt.Sprintf("schedule %s is not paused (status: %s)", p.ID, sched.desired.Status),
+		}
+	}
+
+	// Check git preconditions.
+	if err := d.gitOps.CheckRepoPreconditions(); err != nil {
+		return nil, &model.RPCError{
+			Code:    model.RPCErrCodeGitPrecondition,
+			Message: err.Error(),
+		}
+	}
+
+	// Update desired state back to active.
+	sched.desired.Status = model.StatusActive
+	if err := d.desiredStore.Write(sched.desired); err != nil {
+		return nil, &model.RPCError{
+			Code:    model.RPCErrCodeInternal,
+			Message: "failed to write unpaused state: " + err.Error(),
+		}
+	}
+
+	// Git commit.
+	filePath := d.desiredStore.FilePath(p.ID)
+	commitMsg := fmt.Sprintf("sundial: unpause schedule %s (%s)", p.ID, sched.desired.Name)
+	if err := d.gitOps.CommitSchedule(filePath, commitMsg); err != nil {
+		return nil, &model.RPCError{
+			Code:    model.RPCErrCodeGitPrecondition,
+			Message: "git commit failed: " + err.Error(),
+		}
+	}
+
+	// Recompute NextFireAt.
+	nextFire := sched.trigger.NextFireTime(time.Now())
+	d.mu.Lock()
+	sched.runtime.NextFireAt = nextFire
+	d.mu.Unlock()
+
+	if err := d.runtimeStore.Write(sched.runtime); err != nil {
+		log.Printf("WARN: schedule %s: failed to persist runtime after unpause: %v", p.ID, err)
+	}
+
+	// Git push (best-effort).
+	var warning string
+	if err := d.gitOps.Push(); err != nil {
+		log.Printf("WARN: git push failed after unpause: %v", err)
+		warning = "git push failed: " + err.Error()
+	}
+
+	d.signalWake()
+
+	loc := time.Local
+	if sched.desired.Trigger.Location != nil && sched.desired.Trigger.Location.Timezone != "" {
+		if l, err := time.LoadLocation(sched.desired.Trigger.Location.Timezone); err == nil {
+			loc = l
+		}
+	}
+
+	return &model.PauseResult{
+		ID:        p.ID,
+		Name:      sched.desired.Name,
+		Status:    "active",
+		NextFire:  nextFire.In(loc).Format("Mon Jan 2 3:04 PM MST"),
+		Committed: commitMsg,
+		Warning:   warning,
+	}, nil
 }
 
 // handleList returns a summary of all active schedules.

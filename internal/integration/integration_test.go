@@ -578,6 +578,7 @@ func TestConcurrentAdds(t *testing.T) {
 			Cron:    "0 9 * * 1-5",
 			Command: fmt.Sprintf("echo concurrent-%d", i),
 			Name:    fmt.Sprintf("Concurrent Job %d", i),
+			Force:   true,
 		}
 		var result model.AddResult
 		if err := env.client.Call(model.MethodAdd, params, &result); err != nil {

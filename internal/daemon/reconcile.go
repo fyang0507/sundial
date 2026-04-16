@@ -51,7 +51,7 @@ func (d *Daemon) reconcile(isStartup bool) error {
 		rs := runtimeMap[id]
 
 		switch ds.Status {
-		case model.StatusActive:
+		case model.StatusActive, model.StatusPaused:
 			// Parse trigger.
 			trig, err := trigger.ParseTrigger(ds.Trigger)
 			if err != nil {
@@ -60,8 +60,11 @@ func (d *Daemon) reconcile(isStartup bool) error {
 			}
 
 			if rs == nil {
-				// Active desired + no runtime -> create runtime.
-				nextFire := trig.NextFireTime(time.Now())
+				// No runtime -> create one.
+				nextFire := time.Time{} // zero for paused
+				if ds.Status == model.StatusActive {
+					nextFire = trig.NextFireTime(time.Now())
+				}
 				rs = &model.RuntimeState{
 					ID:         id,
 					NextFireAt: nextFire,
@@ -70,6 +73,9 @@ func (d *Daemon) reconcile(isStartup bool) error {
 					log.Printf("WARN: schedule %s: failed to write runtime state: %v", id, err)
 					continue
 				}
+			} else if ds.Status == model.StatusPaused {
+				// Ensure paused schedules have zero NextFireAt.
+				rs.NextFireAt = time.Time{}
 			}
 
 			d.schedules[id] = &activeSchedule{
@@ -121,6 +127,10 @@ func (d *Daemon) handleMissedFires() {
 	now := time.Now()
 
 	for id, sched := range d.schedules {
+		if sched.desired.Status == model.StatusPaused {
+			continue
+		}
+
 		nextFire := sched.runtime.NextFireAt
 		if nextFire.IsZero() || !nextFire.Before(now) {
 			continue
@@ -226,9 +236,13 @@ func (d *Daemon) logMissedFires(sched *activeSchedule, from, to time.Time) {
 
 // advanceAllSchedules recomputes NextFireAt for each active schedule using
 // the trigger's NextFireTime and persists the updated runtime state.
+// Paused schedules are skipped — their NextFireAt stays at zero.
 func (d *Daemon) advanceAllSchedules() {
 	now := time.Now()
 	for id, sched := range d.schedules {
+		if sched.desired.Status == model.StatusPaused {
+			continue
+		}
 		next := sched.trigger.NextFireTime(now)
 		sched.runtime.NextFireAt = next
 		if err := d.runtimeStore.Write(sched.runtime); err != nil {
