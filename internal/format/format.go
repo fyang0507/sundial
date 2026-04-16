@@ -195,6 +195,54 @@ func FormatTime(t time.Time, tz string) string {
 	return t.In(loc).Format("2006-01-02 3:04pm MST")
 }
 
+// FormatDuplicateError formats a duplicate-schedule error with the structured
+// DuplicateInfo data and actionable hints for both agents and humans.
+func FormatDuplicateError(info *model.DuplicateInfo, jsonMode bool) string {
+	matchLabel := humanMatchType(info.MatchType)
+	isFuzzy := strings.HasPrefix(info.MatchType, "fuzzy_")
+
+	if jsonMode {
+		m := map[string]interface{}{
+			"error":         "duplicate schedule exists",
+			"existing_id":   info.ExistingID,
+			"existing_name": info.ExistingName,
+			"match_type":    info.MatchType,
+			"hint":          "use --force to override, or sundial remove " + info.ExistingID + " first",
+		}
+		return mustMarshal(m)
+	}
+
+	var b strings.Builder
+	if isFuzzy {
+		b.WriteString("Error: similar schedule exists\n")
+	} else {
+		b.WriteString("Error: duplicate schedule exists\n")
+	}
+	kv(&b, "  id", info.ExistingID)
+	kv(&b, "  name", info.ExistingName)
+	kv(&b, "  match", matchLabel)
+	b.WriteByte('\n')
+	b.WriteString("To create anyway:    sundial add --force ...\n")
+	b.WriteString("To update existing:  sundial remove " + info.ExistingID + " && sundial add ...\n")
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// humanMatchType converts a DuplicateInfo.MatchType to a human-readable label.
+func humanMatchType(mt string) string {
+	switch mt {
+	case "exact_name":
+		return "exact name"
+	case "exact_command":
+		return "exact command"
+	case "fuzzy_name":
+		return "similar name (close spelling)"
+	case "fuzzy_command":
+		return "similar command (substring match)"
+	default:
+		return mt
+	}
+}
+
 // FormatError formats an error message for display.
 func FormatError(msg string, jsonMode bool) string {
 	if jsonMode {

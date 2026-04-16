@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -151,6 +153,14 @@ func runAdd(cmd *cobra.Command, args []string) {
 
 	var result model.AddResult
 	if err := client.Call(model.MethodAdd, params, &result); err != nil {
+		var rpcErr *model.RPCError
+		if errors.As(err, &rpcErr) && rpcErr.Code == model.RPCErrCodeDuplicate {
+			var dupInfo model.DuplicateInfo
+			if jsonErr := json.Unmarshal(rpcErr.Data, &dupInfo); jsonErr == nil {
+				fmt.Println(format.FormatDuplicateError(&dupInfo, jsonOutput))
+				os.Exit(1)
+			}
+		}
 		fmt.Println(format.FormatError(err.Error(), jsonOutput))
 		os.Exit(1)
 	}

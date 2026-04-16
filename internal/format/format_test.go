@@ -348,6 +348,103 @@ func TestFormatTime_InvalidTimezone(t *testing.T) {
 	}
 }
 
+// ---------- FormatDuplicateError ----------
+
+func TestFormatDuplicateError_ExactName_PlainText(t *testing.T) {
+	info := &model.DuplicateInfo{
+		ExistingID:   "sch_a1b2c3",
+		ExistingName: "Trash bin check",
+		MatchType:    "exact_name",
+	}
+	got := FormatDuplicateError(info, false)
+	want := `Error: duplicate schedule exists
+  id: sch_a1b2c3
+  name: Trash bin check
+  match: exact name
+
+To create anyway:    sundial add --force ...
+To update existing:  sundial remove sch_a1b2c3 && sundial add ...`
+	if got != want {
+		t.Errorf("FormatDuplicateError exact_name mismatch.\nwant:\n%s\n\ngot:\n%s", want, got)
+	}
+}
+
+func TestFormatDuplicateError_FuzzyName_PlainText(t *testing.T) {
+	info := &model.DuplicateInfo{
+		ExistingID:   "sch_x9y8z7",
+		ExistingName: "Trash bin check",
+		MatchType:    "fuzzy_name",
+	}
+	got := FormatDuplicateError(info, false)
+	if !contains(got, "similar schedule exists") {
+		t.Errorf("expected 'similar schedule exists' header for fuzzy match, got:\n%s", got)
+	}
+	if !contains(got, "similar name (close spelling)") {
+		t.Errorf("expected human-readable fuzzy_name label, got:\n%s", got)
+	}
+	if !contains(got, "--force") {
+		t.Errorf("expected --force hint, got:\n%s", got)
+	}
+}
+
+func TestFormatDuplicateError_ExactCommand_PlainText(t *testing.T) {
+	info := &model.DuplicateInfo{
+		ExistingID:   "sch_cmd01",
+		ExistingName: "My schedule",
+		MatchType:    "exact_command",
+	}
+	got := FormatDuplicateError(info, false)
+	if !contains(got, "duplicate schedule exists") {
+		t.Errorf("expected 'duplicate schedule exists' header, got:\n%s", got)
+	}
+	if !contains(got, "exact command") {
+		t.Errorf("expected 'exact command' match label, got:\n%s", got)
+	}
+}
+
+func TestFormatDuplicateError_FuzzyCommand_PlainText(t *testing.T) {
+	info := &model.DuplicateInfo{
+		ExistingID:   "sch_cmd02",
+		ExistingName: "My schedule",
+		MatchType:    "fuzzy_command",
+	}
+	got := FormatDuplicateError(info, false)
+	if !contains(got, "similar schedule exists") {
+		t.Errorf("expected 'similar schedule exists' for fuzzy match, got:\n%s", got)
+	}
+	if !contains(got, "similar command (substring match)") {
+		t.Errorf("expected human-readable fuzzy_command label, got:\n%s", got)
+	}
+}
+
+func TestFormatDuplicateError_JSON(t *testing.T) {
+	info := &model.DuplicateInfo{
+		ExistingID:   "sch_a1b2c3",
+		ExistingName: "Trash bin check",
+		MatchType:    "exact_name",
+	}
+	got := FormatDuplicateError(info, true)
+	var parsed map[string]interface{}
+	if err := json.Unmarshal([]byte(got), &parsed); err != nil {
+		t.Fatalf("invalid JSON: %v\nraw: %s", err, got)
+	}
+	if parsed["error"] != "duplicate schedule exists" {
+		t.Errorf("expected error field, got %v", parsed["error"])
+	}
+	if parsed["existing_id"] != "sch_a1b2c3" {
+		t.Errorf("expected existing_id, got %v", parsed["existing_id"])
+	}
+	if parsed["existing_name"] != "Trash bin check" {
+		t.Errorf("expected existing_name, got %v", parsed["existing_name"])
+	}
+	if parsed["match_type"] != "exact_name" {
+		t.Errorf("expected match_type, got %v", parsed["match_type"])
+	}
+	if parsed["hint"] == nil || parsed["hint"] == "" {
+		t.Error("expected hint field")
+	}
+}
+
 // ---------- FormatError ----------
 
 func TestFormatError_PlainText(t *testing.T) {
