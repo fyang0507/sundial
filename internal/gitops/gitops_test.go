@@ -2,10 +2,12 @@ package gitops
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/fyang0507/sundial/internal/model"
@@ -233,6 +235,49 @@ func TestCommitSchedule_OnlyTargetFile(t *testing.T) {
 	}
 	if !strings.Contains(staged, "other.txt") {
 		t.Fatalf("expected other.txt to still be staged, got: %s", staged)
+	}
+}
+
+// TestCommitSchedule_ConcurrentSameRepo spawns many goroutines each committing
+// a distinct file on the same repo to exercise the serialization mutex. Without
+// the mutex, concurrent `git commit --only` invocations race on
+// .git/index.lock, which is what caused the nested-add IPC timeout (#33).
+func TestCommitSchedule_ConcurrentSameRepo(t *testing.T) {
+	repo := initTestRepo(t)
+	g := NewGitOps(repo)
+
+	const n = 20
+	var wg sync.WaitGroup
+	errs := make(chan error, n)
+
+	for i := range n {
+		wg.Go(func() {
+			name := fmt.Sprintf("schedule-%d.yaml", i)
+			if err := os.WriteFile(filepath.Join(repo, name), fmt.Appendf(nil, "id: %d\n", i), 0o644); err != nil {
+				errs <- err
+				return
+			}
+			if err := g.CommitSchedule(name, fmt.Sprintf("add %s", name)); err != nil {
+				errs <- err
+			}
+		})
+	}
+
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Errorf("concurrent CommitSchedule failed: %v", err)
+	}
+
+	// Verify every commit landed — n concurrent commits should produce n new commits
+	// on top of the initial "init" commit.
+	out, err := runGit(repo, "log", "--oneline")
+	if err != nil {
+		t.Fatalf("git log failed: %v", err)
+	}
+	lines := splitLines(out)
+	if len(lines) != n+1 {
+		t.Fatalf("expected %d commits (n + init), got %d:\n%s", n+1, len(lines), out)
 	}
 }
 

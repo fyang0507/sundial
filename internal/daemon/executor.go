@@ -24,22 +24,16 @@ type ExecutionResult struct {
 	StderrPreview string
 }
 
-// execute runs the command for a schedule. It acquires the per-schedule mutex
-// to prevent overlapping runs, spawns the command via /bin/zsh, captures output,
-// and updates the runtime state and run log.
+// execute runs the command for a schedule, spawning it via /bin/zsh, capturing
+// output, and updating the runtime state and run log.
+//
+// Caller (fireDueSchedules) holds sched.mu across the whole fire cycle, so
+// overlapping runs are prevented at that layer, not here.
 //
 // For poll triggers, a trigger command is run first as a condition gate. If it
 // exits non-zero, the main command is skipped and false is returned.
 // Returns true if the main command was executed.
 func (d *Daemon) execute(sched *activeSchedule) bool {
-	// TryLock: if already running, skip.
-	if !sched.mu.TryLock() {
-		log.Printf("schedule %s (%s): skipping, previous execution still running",
-			sched.desired.ID, sched.desired.Name)
-		return false
-	}
-	defer sched.mu.Unlock()
-
 	// Poll trigger pre-check: run trigger command, skip main if exit != 0.
 	// Timeout is handled by advanceSchedule — if the deadline has passed,
 	// the schedule completes without firing.
