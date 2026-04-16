@@ -108,6 +108,8 @@ func FormatShowResult(r *model.ShowResult, jsonMode bool) string {
 		lastLine := r.LastFire
 		if r.LastExitCode != nil {
 			lastLine = fmt.Sprintf("%s (exit %d)", r.LastFire, *r.LastExitCode)
+		} else if r.Detach {
+			lastLine = fmt.Sprintf("%s (detached)", r.LastFire)
 		}
 		kv(&b, "last_fire", lastLine)
 	}

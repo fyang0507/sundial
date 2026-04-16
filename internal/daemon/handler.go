@@ -223,6 +223,7 @@ func (d *Daemon) handleAdd(p model.AddParams) (*model.AddResult, *model.RPCError
 		Command:     p.Command,
 		Status:      model.StatusActive,
 		Once:        p.Once,
+		Detach:      p.Detach,
 	}
 
 	filePath := d.desiredStore.FilePath(id)
@@ -559,6 +560,7 @@ func (d *Daemon) handleShow(p model.ShowParams) (*model.ShowResult, *model.RPCEr
 		UserRequest:       sched.desired.UserRequest,
 		CreatedAt:         sched.desired.CreatedAt.Format(time.RFC3339),
 		RecreationCommand: sched.desired.RecreationCommand,
+		Detach:            sched.desired.Detach,
 	}
 
 	return result, nil
@@ -676,6 +678,7 @@ func (d *Daemon) refreshActiveSchedule(
 	// Update desired state fields.
 	existing.desired.Trigger = trigCfg
 	existing.desired.Once = p.Once
+	existing.desired.Detach = p.Detach
 	existing.desired.CreatedAt = time.Now() // reset for poll timeout recalculation
 	if p.Command != "" {
 		existing.desired.Command = p.Command
@@ -793,6 +796,7 @@ func (d *Daemon) reactivateSchedule(
 	completed.Status = model.StatusActive
 	completed.Trigger = trigCfg
 	completed.Once = p.Once
+	completed.Detach = p.Detach
 	if p.Name != "" {
 		completed.Name = p.Name
 		name = p.Name

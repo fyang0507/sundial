@@ -56,6 +56,7 @@ var (
 	addForce          bool
 	addRefresh        bool
 	addOnce           bool
+	addDetach         bool
 	addLatSet         bool
 	addLonSet         bool
 )
@@ -81,6 +82,7 @@ func init() {
 	addCmd.Flags().BoolVar(&addForce, "force", false, "skip duplicate detection")
 	addCmd.Flags().BoolVar(&addRefresh, "refresh", false, "update existing schedule if name matches (requires --name)")
 	addCmd.Flags().BoolVar(&addOnce, "once", false, "fire once then complete the schedule")
+	addCmd.Flags().BoolVar(&addDetach, "detach", false, "fire-and-forget: spawn command without waiting (no exit code captured)")
 }
 
 func runAdd(cmd *cobra.Command, args []string) {
@@ -198,6 +200,9 @@ func runAddDryRun() {
 	if addOnce {
 		fmt.Printf("once:       true (fires once then completes)\n")
 	}
+	if addDetach {
+		fmt.Printf("detach:     true (fire-and-forget; no exit code captured)\n")
+	}
 }
 
 func buildTriggerConfig() model.TriggerConfig {
@@ -249,6 +254,7 @@ func buildAddParams() model.AddParams {
 		Force:       addForce,
 		Refresh:     addRefresh,
 		Once:        addOnce,
+		Detach:      addDetach,
 	}
 
 	switch params.Type {

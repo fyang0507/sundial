@@ -66,6 +66,7 @@ type AddParams struct {
 	Force          bool        `json:"force,omitempty"`
 	Refresh        bool        `json:"refresh,omitempty"` // update existing schedule in place if name matches
 	Once           bool        `json:"once,omitempty"`    // fire once then complete
+	Detach         bool        `json:"detach,omitempty"`  // fire-and-forget: spawn without waiting for exit
 }
 
 // AddResult is returned by a successful "add" RPC.
@@ -145,6 +146,7 @@ type ShowResult struct {
 	UserRequest       string `json:"user_request,omitempty"`
 	CreatedAt         string `json:"created_at"`
 	RecreationCommand string `json:"recreation_command,omitempty"`
+	Detach            bool   `json:"detach,omitempty"`
 }
 
 // ReloadResult is returned by a successful "reload" RPC.
