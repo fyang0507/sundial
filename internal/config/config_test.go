@@ -240,6 +240,33 @@ func TestFindConfigPath_EnvVar(t *testing.T) {
 	}
 }
 
+func TestFindConfigPath_XDGDefault(t *testing.T) {
+	// Clear env var so it doesn't interfere.
+	t.Setenv("SUNDIAL_CONFIG", "")
+
+	// Create a fake XDG config directory with config.yaml.
+	tmp := t.TempDir()
+	xdgDir := filepath.Join(tmp, ".config", "sundial")
+	if err := os.MkdirAll(xdgDir, 0o755); err != nil {
+		t.Fatalf("creating xdg dir: %v", err)
+	}
+	cfgFile := filepath.Join(xdgDir, "config.yaml")
+	if err := os.WriteFile(cfgFile, []byte("data_repo: /tmp\n"), 0o644); err != nil {
+		t.Fatalf("writing config: %v", err)
+	}
+
+	// Override HOME so UserHomeDir() returns our temp dir.
+	t.Setenv("HOME", tmp)
+
+	got, err := FindConfigPath()
+	if err != nil {
+		t.Fatalf("FindConfigPath() error: %v", err)
+	}
+	if got != cfgFile {
+		t.Errorf("FindConfigPath() = %q, want %q", got, cfgFile)
+	}
+}
+
 func TestFindConfigPath_NotFound(t *testing.T) {
 	// Clear env var so it doesn't interfere.
 	t.Setenv("SUNDIAL_CONFIG", "")

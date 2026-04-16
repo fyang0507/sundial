@@ -111,8 +111,9 @@ func Validate(cfg *model.Config) error {
 // FindConfigPath locates a config.yaml file by:
 //  1. Checking the SUNDIAL_CONFIG environment variable
 //  2. Looking in the directory of the running executable
+//  3. Looking at ~/.config/sundial/config.yaml
 //
-// Returns model.ErrConfigNotFound if neither location has a config file.
+// Returns model.ErrConfigNotFound if no location has a config file.
 func FindConfigPath() (string, error) {
 	// Check env var first.
 	if envPath := os.Getenv("SUNDIAL_CONFIG"); envPath != "" {
@@ -129,6 +130,15 @@ func FindConfigPath() (string, error) {
 		candidate := filepath.Join(exeDir, "config.yaml")
 		if _, err := os.Stat(candidate); err == nil {
 			return candidate, nil
+		}
+	}
+
+	// Check XDG default location.
+	home, err := os.UserHomeDir()
+	if err == nil {
+		xdgPath := filepath.Join(home, ".config", "sundial", "config.yaml")
+		if _, err := os.Stat(xdgPath); err == nil {
+			return xdgPath, nil
 		}
 	}
 
