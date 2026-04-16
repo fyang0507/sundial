@@ -44,6 +44,7 @@ type TriggerConfig struct {
 	Location       *Location   `json:"location,omitempty"`
 	TriggerCommand string      `json:"trigger_command,omitempty"` // condition check command (poll)
 	Interval       string      `json:"interval,omitempty"`        // Go duration, e.g. "2m" (poll)
+	Timeout        string      `json:"timeout,omitempty"`         // Go duration, e.g. "72h" (poll)
 }
 
 // Trigger is the runtime interface for computing fire times.

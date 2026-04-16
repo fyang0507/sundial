@@ -40,6 +40,8 @@ func (d *Daemon) execute(sched *activeSchedule) bool {
 	defer sched.mu.Unlock()
 
 	// Poll trigger pre-check: run trigger command, skip main if exit != 0.
+	// Timeout is handled by advanceSchedule — if the deadline has passed,
+	// the schedule completes without firing.
 	if sched.desired.Trigger.Type == model.TriggerTypePoll {
 		if !d.runTriggerCheck(sched) {
 			return false
@@ -82,6 +84,22 @@ func (d *Daemon) execute(sched *activeSchedule) bool {
 	}
 
 	return true
+}
+
+// isPollTimedOut returns true if the poll schedule's timeout has expired.
+// The deadline is computed as created_at + timeout from the trigger config.
+func (d *Daemon) isPollTimedOut(sched *activeSchedule) bool {
+	timeoutStr := sched.desired.Trigger.Timeout
+	if timeoutStr == "" {
+		return false
+	}
+	timeout, err := time.ParseDuration(timeoutStr)
+	if err != nil {
+		log.Printf("WARN: schedule %s: invalid timeout %q: %v", sched.desired.ID, timeoutStr, err)
+		return false
+	}
+	deadline := sched.desired.CreatedAt.Add(timeout)
+	return time.Now().After(deadline)
 }
 
 // runTriggerCheck executes the poll trigger's condition command and returns

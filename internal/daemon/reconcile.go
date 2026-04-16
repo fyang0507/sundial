@@ -137,8 +137,15 @@ func (d *Daemon) handleMissedFires() {
 		}
 
 		// Poll triggers: missed checks are meaningless — the condition may or
-		// may not still hold. Just advance to the next interval.
+		// may not still hold. If the timeout expired while offline, complete
+		// without firing. Otherwise advance to the next interval.
 		if sched.desired.Trigger.Type == model.TriggerTypePoll {
+			if d.isPollTimedOut(sched) {
+				log.Printf("schedule %s (%s): poll timeout expired while daemon was stopped, completing",
+					id, sched.desired.Name)
+				d.completeSchedule(sched, model.CompletionTimeout)
+				continue
+			}
 			sched.runtime.NextFireAt = sched.trigger.NextFireTime(now)
 			if err := d.runtimeStore.Write(sched.runtime); err != nil {
 				log.Printf("WARN: schedule %s: failed to persist runtime after poll advance: %v", id, err)

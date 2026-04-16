@@ -21,18 +21,27 @@ const (
 	LogTypeMissSummary RunLogType = "miss_summary"
 )
 
+// CompletionReason records why a schedule was completed.
+type CompletionReason string
+
+const (
+	CompletionTriggered CompletionReason = "triggered" // poll trigger condition matched (or --once fired)
+	CompletionTimeout   CompletionReason = "timeout"   // poll timeout expired without condition match
+)
+
 // DesiredState is the canonical schedule definition stored in the data repo.
 // One JSON file per schedule at <data_repo>/sundial/schedules/sch_<id>.json.
 type DesiredState struct {
-	ID                string         `json:"id"`
-	Name              string         `json:"name"`
-	CreatedAt         time.Time      `json:"created_at"`
-	UserRequest       string         `json:"user_request,omitempty"`
-	Trigger           TriggerConfig  `json:"trigger"`
-	Command           string         `json:"command"`
-	Status            ScheduleStatus `json:"status"`
-	RecreationCommand string         `json:"recreation_command,omitempty"`
-	Once              bool           `json:"once,omitempty"` // fire once then complete
+	ID                string           `json:"id"`
+	Name              string           `json:"name"`
+	CreatedAt         time.Time        `json:"created_at"`
+	UserRequest       string           `json:"user_request,omitempty"`
+	Trigger           TriggerConfig    `json:"trigger"`
+	Command           string           `json:"command"`
+	Status            ScheduleStatus   `json:"status"`
+	CompletionReason  CompletionReason `json:"completion_reason,omitempty"` // set when status=completed
+	RecreationCommand string           `json:"recreation_command,omitempty"`
+	Once              bool             `json:"once,omitempty"` // fire once then complete
 }
 
 // RuntimeState is machine-local scheduling data managed by the daemon.
