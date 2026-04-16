@@ -180,3 +180,40 @@ type DuplicateInfo struct {
 	ExistingName string `json:"existing_name"`
 	MatchType    string `json:"match_type"` // "exact_name" or "exact_command"
 }
+
+// NotFoundInfo is included in error data when a schedule ID is not found.
+type NotFoundInfo struct {
+	SearchedID   string   `json:"searched_id"`
+	AvailableIDs []string `json:"available_ids,omitempty"`
+	ClosestMatch string   `json:"closest_match,omitempty"`
+	Hint         string   `json:"hint"`
+}
+
+// GitPreconditionInfo is included in error data when a git precondition check fails.
+type GitPreconditionInfo struct {
+	FailureType      string   `json:"failure_type"` // "detached_head", "rebase", "merge", "unmerged", "commit_failed"
+	DataRepoPath     string   `json:"data_repo_path"`
+	RecoveryCommands []string `json:"recovery_commands"`
+}
+
+// StateConflictInfo is included in error data when an operation conflicts with
+// the schedule's current state (e.g. pausing an already-paused schedule).
+type StateConflictInfo struct {
+	ScheduleID       string `json:"schedule_id"`
+	ScheduleName     string `json:"schedule_name"`
+	CurrentStatus    string `json:"current_status"`
+	SuggestedCommand string `json:"suggested_command"`
+}
+
+// InvalidTriggerInfo is included in error data when trigger parameters are invalid.
+type InvalidTriggerInfo struct {
+	TriggerType string `json:"trigger_type"`
+	RawError    string `json:"raw_error"`
+	Example     string `json:"example"`
+}
+
+// MethodNotFoundInfo is included in error data when an unknown RPC method is called.
+type MethodNotFoundInfo struct {
+	Method           string   `json:"method"`
+	AvailableMethods []string `json:"available_methods"`
+}

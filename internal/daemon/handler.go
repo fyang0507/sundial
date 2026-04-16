@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/fyang0507/sundial/internal/config"
@@ -78,9 +79,15 @@ func (d *Daemon) Handle(method string, params json.RawMessage) (interface{}, *mo
 		return d.handleHealth()
 
 	default:
+		info := model.MethodNotFoundInfo{
+			Method:           method,
+			AvailableMethods: availableMethods,
+		}
+		data, _ := json.Marshal(info)
 		return nil, &model.RPCError{
 			Code:    model.RPCErrCodeMethodNotFound,
 			Message: fmt.Sprintf("unknown method %q", method),
+			Data:    data,
 		}
 	}
 }
@@ -112,10 +119,7 @@ func (d *Daemon) handleAdd(p model.AddParams) (*model.AddResult, *model.RPCError
 	// 2. Parse and validate trigger.
 	trig, err := trigger.ParseTrigger(trigCfg)
 	if err != nil {
-		return nil, &model.RPCError{
-			Code:    model.RPCErrCodeInvalidParams,
-			Message: "invalid trigger: " + err.Error(),
-		}
+		return nil, invalidTriggerError(p.Type, err)
 	}
 
 	// 3. Check duplicates against active schedules (exact then fuzzy).
@@ -191,10 +195,7 @@ func (d *Daemon) handleAdd(p model.AddParams) (*model.AddResult, *model.RPCError
 
 	// 4. Check git preconditions.
 	if err := d.gitOps.CheckRepoPreconditions(); err != nil {
-		return nil, &model.RPCError{
-			Code:    model.RPCErrCodeGitPrecondition,
-			Message: err.Error(),
-		}
+		return nil, d.gitPreconditionError(err)
 	}
 
 	// 5. Generate ID, build DesiredState, write to store.
@@ -230,10 +231,7 @@ func (d *Daemon) handleAdd(p model.AddParams) (*model.AddResult, *model.RPCError
 	// 6. Git commit.
 	commitMsg := fmt.Sprintf("sundial: add schedule %s (%s)", id, name)
 	if err := d.gitOps.CommitSchedule(filePath, commitMsg); err != nil {
-		return nil, &model.RPCError{
-			Code:    model.RPCErrCodeGitPrecondition,
-			Message: "git commit failed: " + err.Error(),
-		}
+		return nil, d.gitPreconditionError(fmt.Errorf("git commit failed: %w", err))
 	}
 
 	// 7. Create RuntimeState, write to store.
@@ -310,10 +308,7 @@ func (d *Daemon) handleRemove(p model.RemoveParams) (*model.RemoveResult, *model
 	} else {
 		if _, ok := d.schedules[p.ID]; !ok {
 			d.mu.Unlock()
-			return nil, &model.RPCError{
-				Code:    model.RPCErrCodeNotFound,
-				Message: fmt.Sprintf("schedule %s not found", p.ID),
-			}
+			return nil, d.notFoundError(p.ID)
 		}
 		toRemove = []string{p.ID}
 	}
@@ -341,10 +336,7 @@ func (d *Daemon) handleRemove(p model.RemoveParams) (*model.RemoveResult, *model
 		filePath := d.desiredStore.FilePath(id)
 		commitMsg := fmt.Sprintf("sundial: remove schedule %s (%s)", id, sched.desired.Name)
 		if err := d.gitOps.CommitSchedule(filePath, commitMsg); err != nil {
-			return nil, &model.RPCError{
-				Code:    model.RPCErrCodeGitPrecondition,
-				Message: "git commit failed: " + err.Error(),
-			}
+			return nil, d.gitPreconditionError(fmt.Errorf("git commit failed: %w", err))
 		}
 		lastCommitMsg = commitMsg
 
@@ -391,25 +383,17 @@ func (d *Daemon) handlePause(p model.PauseParams) (*model.PauseResult, *model.RP
 	d.mu.RUnlock()
 
 	if !ok {
-		return nil, &model.RPCError{
-			Code:    model.RPCErrCodeNotFound,
-			Message: fmt.Sprintf("schedule %s not found", p.ID),
-		}
+		return nil, d.notFoundError(p.ID)
 	}
 
 	if sched.desired.Status == model.StatusPaused {
-		return nil, &model.RPCError{
-			Code:    model.RPCErrCodeInvalidParams,
-			Message: fmt.Sprintf("schedule %s is already paused", p.ID),
-		}
+		return nil, d.stateConflictError(p.ID, sched.desired.Name, "paused",
+			fmt.Sprintf("sundial unpause %s", p.ID))
 	}
 
 	// Check git preconditions.
 	if err := d.gitOps.CheckRepoPreconditions(); err != nil {
-		return nil, &model.RPCError{
-			Code:    model.RPCErrCodeGitPrecondition,
-			Message: err.Error(),
-		}
+		return nil, d.gitPreconditionError(err)
 	}
 
 	// Update desired state to paused.
@@ -425,10 +409,7 @@ func (d *Daemon) handlePause(p model.PauseParams) (*model.PauseResult, *model.RP
 	filePath := d.desiredStore.FilePath(p.ID)
 	commitMsg := fmt.Sprintf("sundial: pause schedule %s (%s)", p.ID, sched.desired.Name)
 	if err := d.gitOps.CommitSchedule(filePath, commitMsg); err != nil {
-		return nil, &model.RPCError{
-			Code:    model.RPCErrCodeGitPrecondition,
-			Message: "git commit failed: " + err.Error(),
-		}
+		return nil, d.gitPreconditionError(fmt.Errorf("git commit failed: %w", err))
 	}
 
 	// Zero out NextFireAt so the schedule won't fire.
@@ -465,25 +446,17 @@ func (d *Daemon) handleUnpause(p model.PauseParams) (*model.PauseResult, *model.
 	d.mu.RUnlock()
 
 	if !ok {
-		return nil, &model.RPCError{
-			Code:    model.RPCErrCodeNotFound,
-			Message: fmt.Sprintf("schedule %s not found", p.ID),
-		}
+		return nil, d.notFoundError(p.ID)
 	}
 
 	if sched.desired.Status != model.StatusPaused {
-		return nil, &model.RPCError{
-			Code:    model.RPCErrCodeInvalidParams,
-			Message: fmt.Sprintf("schedule %s is not paused (status: %s)", p.ID, sched.desired.Status),
-		}
+		return nil, d.stateConflictError(p.ID, sched.desired.Name, string(sched.desired.Status),
+			fmt.Sprintf("sundial pause %s", p.ID))
 	}
 
 	// Check git preconditions.
 	if err := d.gitOps.CheckRepoPreconditions(); err != nil {
-		return nil, &model.RPCError{
-			Code:    model.RPCErrCodeGitPrecondition,
-			Message: err.Error(),
-		}
+		return nil, d.gitPreconditionError(err)
 	}
 
 	// Update desired state back to active.
@@ -499,10 +472,7 @@ func (d *Daemon) handleUnpause(p model.PauseParams) (*model.PauseResult, *model.
 	filePath := d.desiredStore.FilePath(p.ID)
 	commitMsg := fmt.Sprintf("sundial: unpause schedule %s (%s)", p.ID, sched.desired.Name)
 	if err := d.gitOps.CommitSchedule(filePath, commitMsg); err != nil {
-		return nil, &model.RPCError{
-			Code:    model.RPCErrCodeGitPrecondition,
-			Message: "git commit failed: " + err.Error(),
-		}
+		return nil, d.gitPreconditionError(fmt.Errorf("git commit failed: %w", err))
 	}
 
 	// Recompute NextFireAt.
@@ -562,10 +532,7 @@ func (d *Daemon) handleShow(p model.ShowParams) (*model.ShowResult, *model.RPCEr
 	d.mu.RUnlock()
 
 	if !ok {
-		return nil, &model.RPCError{
-			Code:    model.RPCErrCodeNotFound,
-			Message: fmt.Sprintf("schedule %s not found", p.ID),
-		}
+		return nil, d.notFoundError(p.ID)
 	}
 
 	summary := buildSummary(sched)
@@ -787,10 +754,7 @@ func (d *Daemon) reactivateSchedule(
 
 	// Check git preconditions.
 	if err := d.gitOps.CheckRepoPreconditions(); err != nil {
-		return nil, &model.RPCError{
-			Code:    model.RPCErrCodeGitPrecondition,
-			Message: err.Error(),
-		}
+		return nil, d.gitPreconditionError(err)
 	}
 
 	// Update desired state.
@@ -817,10 +781,7 @@ func (d *Daemon) reactivateSchedule(
 	relPath, _ := filepath.Rel(d.cfg.DataRepo, filePath)
 	commitMsg := fmt.Sprintf("sundial: reactivate schedule %s (%s)", id, name)
 	if err := d.gitOps.CommitSchedule(filePath, commitMsg); err != nil {
-		return nil, &model.RPCError{
-			Code:    model.RPCErrCodeGitPrecondition,
-			Message: "git commit failed: " + err.Error(),
-		}
+		return nil, d.gitPreconditionError(fmt.Errorf("git commit failed: %w", err))
 	}
 
 	// Create fresh runtime state.
@@ -876,6 +837,138 @@ func (d *Daemon) reactivateSchedule(
 	}
 
 	return result, nil
+}
+
+// notFoundError builds a structured RPCError for schedule-not-found, including
+// available IDs and closest match to help agents self-correct.
+func (d *Daemon) notFoundError(searchedID string) *model.RPCError {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	info := model.NotFoundInfo{
+		SearchedID: searchedID,
+		Hint:       `run "sundial list" to see available schedules`,
+	}
+
+	const maxIDs = 10
+	var bestID string
+	bestDist := 1.0
+
+	for id, sched := range d.schedules {
+		if len(info.AvailableIDs) < maxIDs {
+			info.AvailableIDs = append(info.AvailableIDs, id+" ("+sched.desired.Name+")")
+		}
+		dist := similarity.NormalizedDistance(searchedID, id)
+		if dist < bestDist {
+			bestDist = dist
+			bestID = id
+		}
+	}
+
+	if bestDist <= 0.5 && bestID != "" {
+		info.ClosestMatch = bestID
+	}
+
+	data, _ := json.Marshal(info)
+	return &model.RPCError{
+		Code:    model.RPCErrCodeNotFound,
+		Message: fmt.Sprintf("schedule %s not found", searchedID),
+		Data:    data,
+	}
+}
+
+// gitPreconditionError builds a structured RPCError for git precondition
+// failures, classifying the failure type and providing recovery commands.
+func (d *Daemon) gitPreconditionError(err error) *model.RPCError {
+	info := model.GitPreconditionInfo{
+		DataRepoPath: d.cfg.DataRepo,
+	}
+
+	msg := err.Error()
+	switch {
+	case strings.Contains(msg, "detached HEAD"):
+		info.FailureType = "detached_head"
+		info.RecoveryCommands = []string{
+			fmt.Sprintf("git -C %s checkout main", d.cfg.DataRepo),
+		}
+	case strings.Contains(msg, "rebase in progress"):
+		info.FailureType = "rebase"
+		info.RecoveryCommands = []string{
+			fmt.Sprintf("git -C %s rebase --abort", d.cfg.DataRepo),
+		}
+	case strings.Contains(msg, "merge in progress"):
+		info.FailureType = "merge"
+		info.RecoveryCommands = []string{
+			fmt.Sprintf("git -C %s merge --abort", d.cfg.DataRepo),
+		}
+	case strings.Contains(msg, "unmerged"):
+		info.FailureType = "unmerged"
+		info.RecoveryCommands = []string{
+			fmt.Sprintf("git -C %s add . && git -C %s commit -m 'resolve conflicts'", d.cfg.DataRepo, d.cfg.DataRepo),
+		}
+	case strings.Contains(msg, "git commit failed") || strings.Contains(msg, "git add failed"):
+		info.FailureType = "commit_failed"
+		info.RecoveryCommands = []string{"sundial reload"}
+	default:
+		info.FailureType = "unknown"
+		info.RecoveryCommands = []string{"sundial health", "sundial reload"}
+	}
+
+	data, _ := json.Marshal(info)
+	return &model.RPCError{
+		Code:    model.RPCErrCodeGitPrecondition,
+		Message: msg,
+		Data:    data,
+	}
+}
+
+// stateConflictError builds a structured RPCError when a pause/unpause operation
+// conflicts with the schedule's current state.
+func (d *Daemon) stateConflictError(id, name, currentStatus, suggestedCmd string) *model.RPCError {
+	info := model.StateConflictInfo{
+		ScheduleID:       id,
+		ScheduleName:     name,
+		CurrentStatus:    currentStatus,
+		SuggestedCommand: suggestedCmd,
+	}
+	data, _ := json.Marshal(info)
+
+	return &model.RPCError{
+		Code:    model.RPCErrCodeStateConflict,
+		Message: fmt.Sprintf("schedule %s is already %s", id, currentStatus),
+		Data:    data,
+	}
+}
+
+// invalidTriggerError builds a structured RPCError for invalid trigger parameters.
+func invalidTriggerError(trigType model.TriggerType, err error) *model.RPCError {
+	info := model.InvalidTriggerInfo{
+		TriggerType: string(trigType),
+		RawError:    err.Error(),
+	}
+	switch trigType {
+	case model.TriggerTypeCron:
+		info.Example = `sundial add --type cron --cron "0 9 * * 1-5" --command "echo hello"`
+	case model.TriggerTypeSolar:
+		info.Example = `sundial add --type solar --event sunset --offset "-1h" --days mon,tue --lat 37.7749 --lon -122.4194 --timezone "America/Los_Angeles" --command "echo hello"`
+	case model.TriggerTypePoll:
+		info.Example = `sundial add --type poll --trigger 'check-cmd' --interval 2m --command "echo hello" --once`
+	}
+	data, _ := json.Marshal(info)
+
+	return &model.RPCError{
+		Code:    model.RPCErrCodeInvalidParams,
+		Message: "invalid trigger: " + err.Error(),
+		Data:    data,
+	}
+}
+
+// availableMethods returns the list of valid RPC method names.
+var availableMethods = []string{
+	model.MethodAdd, model.MethodRemove,
+	model.MethodPause, model.MethodUnpause,
+	model.MethodList, model.MethodShow,
+	model.MethodReload, model.MethodHealth,
 }
 
 // buildSummary constructs a ScheduleSummary from an activeSchedule.

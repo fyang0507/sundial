@@ -243,6 +243,128 @@ func humanMatchType(mt string) string {
 	}
 }
 
+// FormatNotFoundError formats a not-found error with available IDs and hints.
+func FormatNotFoundError(info *model.NotFoundInfo, jsonMode bool) string {
+	if jsonMode {
+		m := map[string]interface{}{
+			"error":       "schedule not found",
+			"searched_id": info.SearchedID,
+			"hint":        info.Hint,
+		}
+		if len(info.AvailableIDs) > 0 {
+			m["available_ids"] = info.AvailableIDs
+		}
+		if info.ClosestMatch != "" {
+			m["closest_match"] = info.ClosestMatch
+		}
+		return mustMarshal(m)
+	}
+
+	var b strings.Builder
+	b.WriteString("Error: schedule not found\n")
+	kv(&b, "  searched", info.SearchedID)
+	if info.ClosestMatch != "" {
+		kv(&b, "  closest", info.ClosestMatch)
+	}
+	kv(&b, "  hint", info.Hint)
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// FormatGitPreconditionError formats a git precondition failure with recovery commands.
+func FormatGitPreconditionError(info *model.GitPreconditionInfo, jsonMode bool) string {
+	if jsonMode {
+		m := map[string]interface{}{
+			"error":             "git precondition failed",
+			"failure_type":      info.FailureType,
+			"data_repo_path":    info.DataRepoPath,
+			"recovery_commands": info.RecoveryCommands,
+		}
+		return mustMarshal(m)
+	}
+
+	var b strings.Builder
+	b.WriteString("Error: git precondition failed\n")
+	kv(&b, "  type", info.FailureType)
+	kv(&b, "  repo", info.DataRepoPath)
+	for _, cmd := range info.RecoveryCommands {
+		kv(&b, "  recover", cmd)
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// FormatStateConflictError formats a state conflict error with the current status
+// and a suggested command to resolve it.
+func FormatStateConflictError(info *model.StateConflictInfo, jsonMode bool) string {
+	if jsonMode {
+		m := map[string]interface{}{
+			"error":             fmt.Sprintf("schedule is already %s", info.CurrentStatus),
+			"schedule_id":       info.ScheduleID,
+			"schedule_name":     info.ScheduleName,
+			"current_status":    info.CurrentStatus,
+			"suggested_command": info.SuggestedCommand,
+		}
+		return mustMarshal(m)
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "Error: schedule is already %s\n", info.CurrentStatus)
+	kv(&b, "  id", info.ScheduleID)
+	kv(&b, "  name", info.ScheduleName)
+	kv(&b, "  status", info.CurrentStatus)
+	kv(&b, "  hint", fmt.Sprintf("run %q to change state", info.SuggestedCommand))
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// FormatDaemonUnreachableError formats a daemon-unreachable error with socket
+// details and startup hints.
+func FormatDaemonUnreachableError(info *model.DaemonUnreachableError, jsonMode bool) string {
+	reason := info.FailureReason
+	if reason == "socket_not_found" {
+		reason = "socket not found"
+	} else if reason == "connection_refused" {
+		reason = "connection refused"
+	}
+
+	if jsonMode {
+		m := map[string]interface{}{
+			"error":       "daemon is not running",
+			"socket_path": info.SocketPath,
+			"reason":      info.FailureReason,
+			"hint":        `run "sundial install" to set up the daemon, or "sundial daemon" to start manually`,
+		}
+		return mustMarshal(m)
+	}
+
+	var b strings.Builder
+	b.WriteString("Error: daemon is not running\n")
+	kv(&b, "  socket", fmt.Sprintf("%s (%s)", info.SocketPath, reason))
+	kv(&b, "  hint", `run "sundial install" to set up the daemon, or "sundial daemon" to start manually`)
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// FormatInvalidTriggerError formats an invalid-trigger error with the trigger type
+// and a corrective example.
+func FormatInvalidTriggerError(info *model.InvalidTriggerInfo, jsonMode bool) string {
+	if jsonMode {
+		m := map[string]interface{}{
+			"error":        "invalid trigger",
+			"trigger_type": info.TriggerType,
+			"raw_error":    info.RawError,
+			"example":      info.Example,
+		}
+		return mustMarshal(m)
+	}
+
+	var b strings.Builder
+	b.WriteString("Error: invalid trigger\n")
+	kv(&b, "  type", info.TriggerType)
+	kv(&b, "  detail", info.RawError)
+	if info.Example != "" {
+		kv(&b, "  example", info.Example)
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
 // FormatError formats an error message for display.
 func FormatError(msg string, jsonMode bool) string {
 	if jsonMode {
