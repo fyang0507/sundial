@@ -725,9 +725,6 @@ func (d *Daemon) handleHealth() (*model.HealthResult, *model.RPCError) {
 		d.mu.RUnlock()
 	}
 
-	// Effective PATH.
-	result.EffectivePath = os.Getenv("PATH")
-
 	// Overall healthy status.
 	result.Healthy = result.DaemonRunning && result.ConfigValid && result.DataRepoOK && result.DataRepoGitClean
 

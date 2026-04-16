@@ -143,9 +143,6 @@ func FormatHealthResult(r *model.HealthResult, jsonMode bool) string {
 	}
 
 	kv(&b, "schedules", fmt.Sprintf("%d active", r.ScheduleCount))
-	if r.EffectivePath != "" {
-		kv(&b, "path", r.EffectivePath)
-	}
 
 	// Collect warnings from orphaned schedules and schedule file warnings.
 	var warnings []string
