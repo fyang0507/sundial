@@ -40,18 +40,21 @@ type RPCError struct {
 
 // AddParams are the parameters for the "add" RPC method.
 type AddParams struct {
-	Type        TriggerType `json:"type"`
-	Cron        string      `json:"cron,omitempty"`
-	Event       SolarEvent  `json:"event,omitempty"`
-	Offset      string      `json:"offset,omitempty"`
-	Days        []string    `json:"days,omitempty"`
-	Lat         *float64    `json:"lat,omitempty"`
-	Lon         *float64    `json:"lon,omitempty"`
-	Timezone    string      `json:"timezone,omitempty"`
-	Command     string      `json:"command"`
-	Name        string      `json:"name,omitempty"`
-	UserRequest string      `json:"user_request,omitempty"`
-	Force       bool        `json:"force,omitempty"`
+	Type           TriggerType `json:"type"`
+	Cron           string      `json:"cron,omitempty"`
+	Event          SolarEvent  `json:"event,omitempty"`
+	Offset         string      `json:"offset,omitempty"`
+	Days           []string    `json:"days,omitempty"`
+	Lat            *float64    `json:"lat,omitempty"`
+	Lon            *float64    `json:"lon,omitempty"`
+	Timezone       string      `json:"timezone,omitempty"`
+	TriggerCommand string      `json:"trigger_command,omitempty"` // poll: condition check command
+	Interval       string      `json:"interval,omitempty"`        // poll: check frequency
+	Command        string      `json:"command"`
+	Name           string      `json:"name,omitempty"`
+	UserRequest    string      `json:"user_request,omitempty"`
+	Force          bool        `json:"force,omitempty"`
+	Once           bool        `json:"once,omitempty"` // fire once then complete
 }
 
 // AddResult is returned by a successful "add" RPC.

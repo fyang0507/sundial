@@ -2,8 +2,10 @@ package daemon
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"log"
+	"os"
 	"os/exec"
 	"time"
 
@@ -24,14 +26,25 @@ type ExecutionResult struct {
 // execute runs the command for a schedule. It acquires the per-schedule mutex
 // to prevent overlapping runs, spawns the command via /bin/zsh, captures output,
 // and updates the runtime state and run log.
-func (d *Daemon) execute(sched *activeSchedule) {
+//
+// For poll triggers, a trigger command is run first as a condition gate. If it
+// exits non-zero, the main command is skipped and false is returned.
+// Returns true if the main command was executed.
+func (d *Daemon) execute(sched *activeSchedule) bool {
 	// TryLock: if already running, skip.
 	if !sched.mu.TryLock() {
 		log.Printf("schedule %s (%s): skipping, previous execution still running",
 			sched.desired.ID, sched.desired.Name)
-		return
+		return false
 	}
 	defer sched.mu.Unlock()
+
+	// Poll trigger pre-check: run trigger command, skip main if exit != 0.
+	if sched.desired.Trigger.Type == model.TriggerTypePoll {
+		if !d.runTriggerCheck(sched) {
+			return false
+		}
+	}
 
 	log.Printf("schedule %s (%s): executing command: %s",
 		sched.desired.ID, sched.desired.Name, sched.desired.Command)
@@ -67,11 +80,59 @@ func (d *Daemon) execute(sched *activeSchedule) {
 		log.Printf("WARN: schedule %s: failed to append run log: %v",
 			sched.desired.ID, err)
 	}
+
+	return true
+}
+
+// runTriggerCheck executes the poll trigger's condition command and returns
+// true if the condition passed (exit code 0). It increments CheckCount and
+// passes SUNDIAL_SCHEDULE_ID and SUNDIAL_LAST_FIRED_AT as environment variables.
+func (d *Daemon) runTriggerCheck(sched *activeSchedule) bool {
+	trigCmd := sched.desired.Trigger.TriggerCommand
+
+	log.Printf("schedule %s (%s): running trigger check: %s",
+		sched.desired.ID, sched.desired.Name, trigCmd)
+
+	// Build environment variables for the trigger command.
+	env := os.Environ()
+	env = append(env, fmt.Sprintf("SUNDIAL_SCHEDULE_ID=%s", sched.desired.ID))
+	if sched.runtime.LastFiredAt != nil {
+		env = append(env, fmt.Sprintf("SUNDIAL_LAST_FIRED_AT=%s", sched.runtime.LastFiredAt.UTC().Format(time.RFC3339)))
+	} else {
+		env = append(env, "SUNDIAL_LAST_FIRED_AT=")
+	}
+
+	result := runCommandWithEnv(trigCmd, env)
+
+	sched.runtime.CheckCount++
+	if err := d.runtimeStore.Write(sched.runtime); err != nil {
+		log.Printf("WARN: schedule %s: failed to persist runtime state after check: %v",
+			sched.desired.ID, err)
+	}
+
+	if result.ExitCode != 0 {
+		log.Printf("schedule %s (%s): trigger check returned exit %d, skipping command (check #%d)",
+			sched.desired.ID, sched.desired.Name, result.ExitCode, sched.runtime.CheckCount)
+		return false
+	}
+
+	log.Printf("schedule %s (%s): trigger check passed (check #%d), proceeding to command",
+		sched.desired.ID, sched.desired.Name, sched.runtime.CheckCount)
+	return true
 }
 
 // runCommand executes a shell command via /bin/zsh and returns the result.
 func runCommand(command string) ExecutionResult {
+	return runCommandWithEnv(command, nil)
+}
+
+// runCommandWithEnv executes a shell command via /bin/zsh with optional extra
+// environment variables. If env is nil, the current process environment is used.
+func runCommandWithEnv(command string, env []string) ExecutionResult {
 	cmd := exec.Command("/bin/zsh", "-l", "-c", command)
+	if env != nil {
+		cmd.Env = env
+	}
 
 	var stdoutBuf, stderrBuf bytes.Buffer
 	cmd.Stdout = &limitedWriter{buf: &stdoutBuf, limit: maxOutputCapture}

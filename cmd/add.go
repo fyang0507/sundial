@@ -15,7 +15,7 @@ import (
 var addCmd = &cobra.Command{
 	Use:   "add",
 	Short: "Create a new schedule",
-	Long:  `Create a new cron or solar schedule. The schedule is sent to the daemon and persisted to the data repo.`,
+	Long:  `Create a new cron, solar, or poll schedule. The schedule is sent to the daemon and persisted to the data repo.`,
 	Example: `  # Static cron schedule
   sundial add --type cron --cron "0 9 * * 1-5" \
     --command "cd ~/project && codex exec 'daily standup'"
@@ -25,6 +25,12 @@ var addCmd = &cobra.Command{
     --lat 37.7749 --lon -122.4194 --timezone "America/Los_Angeles" \
     --command "cd ~/project && codex exec 'check trash bins'"
 
+  # Poll trigger — check condition every 2 minutes, fire once when met
+  sundial add --type poll \
+    --trigger 'outreach reply-check --contact-id c_abc123 --channel sms' \
+    --interval 2m --once \
+    --command "codex exec 'Reply from c_abc123. Continue campaign.'"
+
   # Dry run — validate and preview without creating
   sundial add --type cron --cron "0 9 * * 1-5" \
     --command "echo hello" --dry-run`,
@@ -32,27 +38,30 @@ var addCmd = &cobra.Command{
 }
 
 var (
-	addType        string
-	addCron        string
-	addEvent       string
-	addOffset      string
-	addDays        string
-	addLat         float64
-	addLon         float64
-	addTimezone    string
-	addCommand     string
-	addName        string
-	addUserRequest string
-	addDryRun      bool
-	addForce       bool
-	addLatSet      bool
-	addLonSet      bool
+	addType           string
+	addCron           string
+	addEvent          string
+	addOffset         string
+	addDays           string
+	addLat            float64
+	addLon            float64
+	addTimezone       string
+	addTriggerCommand string
+	addInterval       string
+	addCommand        string
+	addName           string
+	addUserRequest    string
+	addDryRun         bool
+	addForce          bool
+	addOnce           bool
+	addLatSet         bool
+	addLonSet         bool
 )
 
 func init() {
 	rootCmd.AddCommand(addCmd)
 
-	addCmd.Flags().StringVar(&addType, "type", "", "trigger type: cron or solar (required)")
+	addCmd.Flags().StringVar(&addType, "type", "", "trigger type: cron, solar, or poll (required)")
 	addCmd.Flags().StringVar(&addCron, "cron", "", "cron expression (required for --type cron)")
 	addCmd.Flags().StringVar(&addEvent, "event", "", "solar event: sunrise or sunset (required for --type solar)")
 	addCmd.Flags().StringVar(&addOffset, "offset", "", "offset from solar event, e.g. \"-1h\", \"+30m\"")
@@ -60,11 +69,14 @@ func init() {
 	addCmd.Flags().Float64Var(&addLat, "lat", 0, "latitude (required for --type solar)")
 	addCmd.Flags().Float64Var(&addLon, "lon", 0, "longitude (required for --type solar)")
 	addCmd.Flags().StringVar(&addTimezone, "timezone", "", "IANA timezone, e.g. America/Los_Angeles (required for --type solar)")
+	addCmd.Flags().StringVar(&addTriggerCommand, "trigger", "", "condition command; exit 0 = fire (required for --type poll)")
+	addCmd.Flags().StringVar(&addInterval, "interval", "", "check frequency, e.g. \"2m\", \"5m\" (required for --type poll)")
 	addCmd.Flags().StringVar(&addCommand, "command", "", "shell command to execute (required)")
 	addCmd.Flags().StringVar(&addName, "name", "", "human-readable schedule name")
 	addCmd.Flags().StringVar(&addUserRequest, "user-request", "", "original user request that generated this schedule")
 	addCmd.Flags().BoolVar(&addDryRun, "dry-run", false, "validate and preview without creating the schedule")
 	addCmd.Flags().BoolVar(&addForce, "force", false, "skip duplicate detection")
+	addCmd.Flags().BoolVar(&addOnce, "once", false, "fire once then complete the schedule")
 }
 
 func runAdd(cmd *cobra.Command, args []string) {
@@ -106,8 +118,20 @@ func runAdd(cmd *cobra.Command, args []string) {
 			addError(fmt.Sprintf("%s required for --type solar\n\n  Example: sundial add --type solar --event sunset --offset \"-1h\" --days mon,tue \\\n    --lat 37.7749 --lon -122.4194 --timezone \"America/Los_Angeles\" \\\n    --command \"echo hello\"",
 				strings.Join(missing, ", ")))
 		}
+	case model.TriggerTypePoll:
+		var missing []string
+		if addTriggerCommand == "" {
+			missing = append(missing, "--trigger")
+		}
+		if addInterval == "" {
+			missing = append(missing, "--interval")
+		}
+		if len(missing) > 0 {
+			addError(fmt.Sprintf("%s required for --type poll\n\n  Example: sundial add --type poll --trigger 'check-cmd' --interval 2m \\\n    --command \"echo hello\" --once",
+				strings.Join(missing, ", ")))
+		}
 	default:
-		addError(fmt.Sprintf("invalid --type %q: must be cron or solar", addType))
+		addError(fmt.Sprintf("invalid --type %q: must be cron, solar, or poll", addType))
 	}
 
 	// Dry-run mode: validate locally and preview.
@@ -150,9 +174,15 @@ func runAddDryRun() {
 	}
 
 	fmt.Println("(dry run — no schedule created)")
-	fmt.Printf("schedule:  %s\n", trig.HumanDescription())
-	fmt.Printf("next_fire: %s\n", format.FormatTime(next, tz))
-	fmt.Printf("command:   %s\n", addCommand)
+	fmt.Printf("schedule:   %s\n", trig.HumanDescription())
+	fmt.Printf("next_check: %s\n", format.FormatTime(next, tz))
+	fmt.Printf("command:    %s\n", addCommand)
+	if addTriggerCommand != "" {
+		fmt.Printf("trigger:    %s\n", addTriggerCommand)
+	}
+	if addOnce {
+		fmt.Printf("once:       true (fires once then completes)\n")
+	}
 }
 
 func buildTriggerConfig() model.TriggerConfig {
@@ -186,6 +216,9 @@ func buildTriggerConfig() model.TriggerConfig {
 			Lon:      addLon,
 			Timezone: addTimezone,
 		}
+	case model.TriggerTypePoll:
+		cfg.TriggerCommand = addTriggerCommand
+		cfg.Interval = addInterval
 	}
 
 	return cfg
@@ -198,6 +231,7 @@ func buildAddParams() model.AddParams {
 		Name:        addName,
 		UserRequest: addUserRequest,
 		Force:       addForce,
+		Once:        addOnce,
 	}
 
 	switch params.Type {
@@ -219,6 +253,9 @@ func buildAddParams() model.AddParams {
 		params.Lat = &lat
 		params.Lon = &lon
 		params.Timezone = addTimezone
+	case model.TriggerTypePoll:
+		params.TriggerCommand = addTriggerCommand
+		params.Interval = addInterval
 	}
 
 	return params
