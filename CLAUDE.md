@@ -61,6 +61,7 @@ internal/
 - **Three trigger types**: cron (static schedule), solar (sun-position-based), poll (condition-gated periodic check).
 - **Schedule lifecycle**: active → paused (via `pause`) → active (via `unpause`); active → completed (via `--once`) or removed. Completed schedules auto-reactivate on matching `add`. Active schedules can be updated in place via `--refresh`.
 - **Fuzzy duplicate detection**: `sundial add` checks exact name/command matches first, then fuzzy (Levenshtein for names, substring for commands). `--force` bypasses both.
+- **Execution modes**: default waits for the command to exit (captures `exit_code` + `duration_s`); `--detach` spawns via `Start()` in a new session and returns immediately (per-schedule mutex released in milliseconds, no exit code captured). Use `--detach` for callbacks that re-enter sundial (nested `add --refresh`) or for long-running commands that log outcomes elsewhere.
 - **Agent-first CLI**: non-interactive, --json flag, fail-fast with examples, --dry-run.
 
 ## Design Doc

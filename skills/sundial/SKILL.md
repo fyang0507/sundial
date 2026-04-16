@@ -86,6 +86,7 @@ The trigger command receives `SUNDIAL_SCHEDULE_ID` and `SUNDIAL_LAST_FIRED_AT` e
 - `--dry-run` — validate and preview without creating
 - `--force` — skip duplicate detection (exact and fuzzy)
 - `--refresh` — update an existing schedule in place if name matches (requires `--name`; mutually exclusive with `--force`)
+- `--detach` — fire-and-forget: spawn the command without waiting for exit. No `exit_code` or `duration_s` is captured; `sundial show` renders `last_fire: … (detached)`. Use this when the command is long-running and either logs its own outcome elsewhere or re-enters sundial (e.g. a callback that calls `sundial add --refresh`) — without `--detach` the per-schedule mutex is held for the full command duration and the nested refresh will be rejected as "schedule currently firing"
 
 Duplicate detection catches both exact matches (same name or same command) and fuzzy matches (similar name via Levenshtein distance, or one command is a substring of another). Use `--force` to override.
 
