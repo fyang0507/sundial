@@ -999,11 +999,11 @@ func invalidTriggerError(trigType model.TriggerType, err error) *model.RPCError 
 	}
 	switch trigType {
 	case model.TriggerTypeCron:
-		info.Example = `sundial add --type cron --cron "0 9 * * 1-5" --command "echo hello"`
+		info.Example = `sundial add cron --cron "0 9 * * 1-5" --command "echo hello"`
 	case model.TriggerTypeSolar:
-		info.Example = `sundial add --type solar --event sunset --offset "-1h" --days mon,tue --lat 37.7749 --lon -122.4194 --timezone "America/Los_Angeles" --command "echo hello"`
+		info.Example = `sundial add solar --event sunset --offset "-1h" --days mon,tue --lat 37.7749 --lon -122.4194 --command "echo hello"`
 	case model.TriggerTypePoll:
-		info.Example = `sundial add --type poll --trigger 'check-cmd' --interval 2m --timeout 72h --command "echo hello" --once`
+		info.Example = `sundial add poll --trigger 'check-cmd' --interval 2m --timeout 72h --command "echo hello" --once`
 	}
 	data, _ := json.Marshal(info)
 

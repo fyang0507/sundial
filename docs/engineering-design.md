@@ -139,7 +139,7 @@ The daemon reconciles these on startup: if a desired-state record exists in the 
   },
   "command": "cd ~/projects/trash-bin-detection && codex exec 'Check trash bins on sidewalk and report'",
   "status": "active",
-  "recreation_command": "sundial add --type solar --event sunset --offset \"-1h\" --days mon,tue --lat 37.7749 --lon -122.4194 --timezone \"America/Los_Angeles\" --command \"cd ~/projects/trash-bin-detection && codex exec 'Check trash bins on sidewalk and report'\" --name \"Trash bin check\" --user-request \"Check trash bins every Mon/Tue, 1 hour before sunset\""
+  "recreation_command": "sundial add solar --event sunset --offset \"-1h\" --days mon,tue --lat 37.7749 --lon -122.4194 --timezone \"America/Los_Angeles\" --command \"cd ~/projects/trash-bin-detection && codex exec 'Check trash bins on sidewalk and report'\" --name \"Trash bin check\" --user-request \"Check trash bins every Mon/Tue, 1 hour before sunset\""
 }
 ```
 
@@ -223,9 +223,9 @@ When the Mac is powered off and restarted X days later:
 ### Command Structure
 
 ```
-sundial                          # prints status summary + help
-sundial add [flags]              # create a new schedule (--dry-run to preview without creating)
-sundial list [--json]            # list all schedules
+sundial                                 # prints status summary + help
+sundial add cron|solar|poll [flags]     # create a new schedule (--dry-run to preview without creating)
+sundial list [--json]                   # list all schedules
 sundial remove <id>              # remove a schedule
 sundial show <id> [--json]       # show details of one schedule
 sundial reload                   # re-reconcile desired state from data repo (e.g., after repo sync)
@@ -247,8 +247,7 @@ sundial geocode "San Francisco, CA"
 # → lat: 37.7749  lon: -122.4194  timezone: America/Los_Angeles
 
 # Then passes everything to add
-sundial add \
-  --type solar \
+sundial add solar \
   --event sunset \
   --offset "-1h" \
   --days mon,tue \
@@ -305,7 +304,7 @@ warning: local runtime state write failed — reconciliation recovered
 Error: --command is required
 
 Example:
-  sundial add --type cron --cron "0 9 * * 1-5" \
+  sundial add cron --cron "0 9 * * 1-5" \
     --command "cd ~/projects/standup && codex exec 'daily standup'"
 ```
 
@@ -324,7 +323,7 @@ The agent gets enough context to decide — no silent upsert, no hard wall. `sun
 **Dry-run for verification.** `sundial add --dry-run` validates all flags and returns the computed `next_fire` time without creating the schedule. Useful for agent verification workflows.
 ```
 # Preview without creating
-sundial add --dry-run --type solar --event sunset --offset "-1h" --days mon,tue \
+sundial add solar --dry-run --event sunset --offset "-1h" --days mon,tue \
   --lat 37.7749 --lon -122.4194 --timezone "America/Los_Angeles" \
   --command "cd ~/projects/trash-bin-detection && codex exec 'check trash bins'"
 
@@ -659,8 +658,7 @@ sundial geocode "San Francisco, CA"
 # → lat: 37.7749  lon: -122.4194  timezone: America/Los_Angeles
 
 # 3. Preview the schedule (optional — verify before creating)
-sundial add --dry-run \
-  --type solar \
+sundial add solar --dry-run \
   --event sunset \
   --offset "-1h" \
   --days mon,tue \
@@ -673,8 +671,7 @@ sundial add --dry-run \
 #   (dry run — no schedule created)
 
 # 4. Create the schedule (all info passed as flags — sundial writes data repo + local state, auto-commits)
-sundial add \
-  --type solar \
+sundial add solar \
   --event sunset \
   --offset "-1h" \
   --days mon,tue \
