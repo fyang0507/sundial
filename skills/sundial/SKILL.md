@@ -21,7 +21,7 @@ This builds, installs, and starts the daemon. Once running, all `sundial` comman
 
 | Action | Command |
 |---|---|
-| Create schedule | `sundial add --type cron\|solar\|poll ...` |
+| Create schedule | `sundial add cron\|solar\|poll ...` |
 | List schedules | `sundial list` |
 | Show details | `sundial show <id>` |
 | Remove schedule | `sundial remove <id>` |
@@ -37,16 +37,18 @@ This builds, installs, and starts the daemon. Once running, all `sundial` comman
 ### Cron
 
 ```bash
-sundial add --type cron \
+sundial add cron \
   --cron "0 9 * * 1-5" \
   --command "cd ~/project && your-command-here" \
   --name "weekday 9am task"
 ```
 
+Required flags: `--cron`.
+
 ### Solar
 
 ```bash
-sundial add --type solar \
+sundial add solar \
   --event sunset --offset "-1h" \
   --days mon,wed,fri \
   --lat 37.7749 --lon -122.4194 --timezone "America/Los_Angeles" \
@@ -54,9 +56,12 @@ sundial add --type solar \
   --name "before-sunset task"
 ```
 
-Required flags: `--event` (sunrise|sunset), `--days`, `--lat`, `--lon`, `--timezone`.
+Required flags: `--event` (sunrise|sunset), `--days`, `--lat`, `--lon`.
 
-Optional `--offset`: human (`-1h`, `+30m`) or ISO 8601 (`-PT1H`, `PT30M`).
+Optional flags:
+- `--offset` — human (`-1h`, `+30m`) or ISO 8601 (`-PT1H`, `PT30M`).
+- `--timezone` — IANA timezone (e.g. `America/Los_Angeles`); defaults to the machine's local timezone.
+- `--once` — fire once then complete.
 
 Use `sundial geocode "<address>" --json` to resolve an address into `lat`, `lon`, and `timezone`.
 
@@ -65,24 +70,25 @@ Use `sundial geocode "<address>" --json` to resolve an address into `lat`, `lon`
 Condition-gated periodic check. Runs a trigger command at a fixed interval; the main command fires only when the trigger exits 0.
 
 ```bash
-sundial add --type poll \
+sundial add poll \
   --trigger 'your-check-command --since "$SUNDIAL_LAST_FIRED_AT"' \
-  --interval 2m --once \
+  --interval 2m --timeout 72h --once \
   --command "cd ~/project && your-command-here" \
   --name "wait for condition"
 ```
 
 Required flags: `--trigger` (condition command), `--interval` (check frequency, min 30s), `--timeout` (max lifetime, e.g. `72h`).
 
+Optional flags:
+- `--once` — fire once then complete the schedule. Without it, the poll runs indefinitely. Completed schedules auto-reactivate if `sundial add` is called again with the same command.
+
 The trigger command receives `SUNDIAL_SCHEDULE_ID` and `SUNDIAL_LAST_FIRED_AT` env vars.
 
-`--once` fires the command once then completes the schedule. Without it, the poll runs indefinitely. Completed schedules auto-reactivate if `sundial add` is called again with the same command.
+### Shared Flags (all subcommands)
 
-### Shared Flags
-
+- `--command` — shell command to execute (required)
 - `--name` — human-readable label
 - `--user-request` — store the original user request (always pass this)
-- `--once` — fire once then complete the schedule
 - `--dry-run` — validate and preview without creating
 - `--force` — skip duplicate detection (exact and fuzzy)
 - `--refresh` — update an existing schedule in place if name matches (requires `--name`; mutually exclusive with `--force`)
@@ -96,11 +102,11 @@ Use `--refresh` to atomically update an active schedule without removing it firs
 
 ```bash
 # Original watcher with 72h timeout
-sundial add --type poll --trigger "check-reply" --interval 2m --timeout 72h --once \
+sundial add poll --trigger "check-reply" --interval 2m --timeout 72h --once \
   --command "notify agent" --name "outreach-watch"
 
 # Later: refresh with a new 72h countdown
-sundial add --type poll --trigger "check-reply" --interval 2m --timeout 72h --once \
+sundial add poll --trigger "check-reply" --interval 2m --timeout 72h --once \
   --command "notify agent" --name "outreach-watch" --refresh
 ```
 

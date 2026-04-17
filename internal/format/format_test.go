@@ -619,7 +619,7 @@ func TestFormatInvalidTriggerError_PlainText(t *testing.T) {
 	info := &model.InvalidTriggerInfo{
 		TriggerType: "cron",
 		RawError:    "invalid cron expression",
-		Example:     `sundial add --type cron --cron "0 9 * * 1-5" --command "echo hello"`,
+		Example:     `sundial add cron --cron "0 9 * * 1-5" --command "echo hello"`,
 	}
 	got := FormatInvalidTriggerError(info, false)
 	if !contains(got, "invalid trigger") {
@@ -640,7 +640,7 @@ func TestFormatInvalidTriggerError_JSON(t *testing.T) {
 	info := &model.InvalidTriggerInfo{
 		TriggerType: "solar",
 		RawError:    "unknown event",
-		Example:     "sundial add --type solar ...",
+		Example:     "sundial add solar ...",
 	}
 	got := FormatInvalidTriggerError(info, true)
 	var parsed map[string]interface{}

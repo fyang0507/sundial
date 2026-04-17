@@ -18,7 +18,7 @@ vim config.yaml
 make start
 
 # Create your first schedule
-sundial add --type cron --cron "0 9 * * 1-5" \
+sundial add cron --cron "0 9 * * 1-5" \
   --command "cd ~/project && codex exec 'daily standup'" \
   --name "weekday standup"
 ```
@@ -35,7 +35,7 @@ Other targets: `make stop`, `make restart`.
 
 | Command     | Description                                      |
 |-------------|--------------------------------------------------|
-| `add`       | Create a new cron, solar, or poll schedule       |
+| `add cron\|solar\|poll` | Create a new schedule of the given trigger type |
 | `list`      | List all active schedules                        |
 | `show <id>` | Show details of a specific schedule              |
 | `remove <id>` | Remove a schedule (or `--all --yes` for all)  |
@@ -58,17 +58,17 @@ Standard five-field cron expressions for static, time-based schedules.
 
 ```bash
 # Every weekday at 9am
-sundial add --type cron --cron "0 9 * * 1-5" \
+sundial add cron --cron "0 9 * * 1-5" \
   --command "echo good morning"
 ```
 
 ### Solar
 
-Trigger relative to sunrise or sunset, on specific days of the week. Requires location coordinates and timezone.
+Trigger relative to sunrise or sunset, on specific days of the week. Requires location coordinates; timezone defaults to the machine's local zone.
 
 ```bash
 # 1 hour before sunset on Mondays and Tuesdays
-sundial add --type solar --event sunset --offset "-1h" --days mon,tue \
+sundial add solar --event sunset --offset "-1h" --days mon,tue \
   --lat 37.7749 --lon -122.4194 --timezone "America/Los_Angeles" \
   --command "cd ~/project && codex exec 'check trash bins'"
 ```
@@ -87,9 +87,9 @@ Condition-gated periodic execution. The daemon runs a trigger command at a fixed
 
 ```bash
 # Check every 2 minutes if a reply arrived, fire once when it does
-sundial add --type poll \
+sundial add poll \
   --trigger 'outreach reply-check --contact-id c_abc123 --channel sms' \
-  --interval 2m --once \
+  --interval 2m --timeout 72h --once \
   --command "cd ~/project && codex exec 'Reply from Dr. Smith. Continue campaign.'" \
   --name "await reply from Dr. Smith"
 ```
@@ -101,7 +101,7 @@ The trigger command receives `SUNDIAL_SCHEDULE_ID` and `SUNDIAL_LAST_FIRED_AT` (
 To refresh an active poll watcher's timeout without removing it, use `--refresh`:
 
 ```bash
-sundial add --type poll \
+sundial add poll \
   --trigger 'outreach reply-check --contact-id c_abc123 --channel sms' \
   --interval 2m --timeout 72h --once \
   --command "cd ~/project && codex exec 'Continue campaign.'" \
@@ -115,7 +115,7 @@ sundial add --type poll \
 By default sundial waits for the command to exit so it can record the exit code. For long-running commands -- especially callbacks that re-enter sundial (e.g. a poll callback that calls `sundial add --refresh` to re-arm itself) -- the wait becomes a problem: the per-schedule mutex is held for the full command duration, and any nested refresh is rejected as "schedule currently firing."
 
 ```bash
-sundial add --type poll \
+sundial add poll \
   --trigger 'check-reply' --interval 2m --timeout 72h --once \
   --command 'long-running-callback ...' \
   --name 'outreach-watch' --detach
