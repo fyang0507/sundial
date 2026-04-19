@@ -1,6 +1,6 @@
 # Sundial
 
-Agent-first CLI scheduler with cron, solar, and poll triggers. Go project targeting macOS.
+Agent-first CLI scheduler with cron, solar, poll, and at triggers. Go project targeting macOS.
 
 ## Build & Run
 
@@ -41,7 +41,7 @@ main.go              → cmd.Execute()
 cmd/                 → cobra commands (thin wiring layer)
 internal/
   model/             → all shared types, interfaces, errors (zero deps — everything imports this)
-  trigger/           → CronTrigger + SolarTrigger + PollTrigger implementing model.Trigger
+  trigger/           → CronTrigger + SolarTrigger + PollTrigger + AtTrigger implementing model.Trigger
   config/            → config.yaml loading, validation, path expansion
   store/             → file I/O: desired state (data repo), runtime state, run logs (local)
   gitops/            → git precondition checks, commit --only, push
@@ -58,7 +58,7 @@ internal/
 - **model/ is the contract layer**: all shared types live here. Downstream packages import model, never each other's types.
 - **Single-writer architecture**: daemon owns all schedule state mutation. CLI sends RPCs only.
 - **Two-store state model**: desired state in data repo (git-tracked), runtime state local.
-- **Three trigger types**: cron (static schedule), solar (sun-position-based), poll (condition-gated periodic check).
+- **Four trigger types**: cron (static schedule), solar (sun-position-based), poll (condition-gated periodic check), at (one-off at an absolute timestamp; auto-completes after firing).
 - **Schedule lifecycle**: active → paused (via `pause`) → active (via `unpause`); active → completed (via `--once`) or removed. Completed schedules auto-reactivate on matching `add`. Active schedules can be updated in place via `--refresh`.
 - **Fuzzy duplicate detection**: `sundial add` checks exact name/command matches first, then fuzzy (Levenshtein for names, substring for commands). `--force` bypasses both.
 - **Execution modes**: default waits for the command to exit (captures `exit_code` + `duration_s`); `--detach` spawns via `Start()` in a new session and returns immediately (per-schedule mutex released in milliseconds, no exit code captured). Use `--detach` for callbacks that re-enter sundial (nested `add --refresh`) or for long-running commands that log outcomes elsewhere.

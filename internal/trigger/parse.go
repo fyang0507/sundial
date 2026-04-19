@@ -17,9 +17,31 @@ func ParseTrigger(cfg model.TriggerConfig) (model.Trigger, error) {
 		return parseSolarTrigger(cfg)
 	case model.TriggerTypePoll:
 		return parsePollTrigger(cfg)
+	case model.TriggerTypeAt:
+		return parseAtTrigger(cfg)
 	default:
 		return nil, fmt.Errorf("unknown trigger type %q", cfg.Type)
 	}
+}
+
+func parseAtTrigger(cfg model.TriggerConfig) (*AtTrigger, error) {
+	if cfg.FireAt == "" {
+		return nil, fmt.Errorf("at trigger: fire_at is required")
+	}
+	fireAt, err := time.Parse(time.RFC3339, cfg.FireAt)
+	if err != nil {
+		return nil, fmt.Errorf("invalid fire_at %q: %w", cfg.FireAt, err)
+	}
+	t := &AtTrigger{
+		FireAt: fireAt.UTC(),
+	}
+	if cfg.Location != nil {
+		t.DisplayTimezone = cfg.Location.Timezone
+	}
+	if err := t.Validate(); err != nil {
+		return nil, err
+	}
+	return t, nil
 }
 
 func parseCronTrigger(cfg model.TriggerConfig) (*CronTrigger, error) {

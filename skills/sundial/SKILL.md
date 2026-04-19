@@ -1,11 +1,11 @@
 ---
 name: sundial
-description: Scheduler service for agent. Cron, solar, and poll triggers.
+description: Scheduler service for agent. Cron, solar, poll, and at triggers.
 ---
 
 # Sundial
 
-CLI scheduler with cron, solar, and poll triggers. A background daemon manages all schedules over IPC. All commands accept `--json`.
+CLI scheduler with cron, solar, poll, and at triggers. A background daemon manages all schedules over IPC. All commands accept `--json`.
 
 ## Setup
 
@@ -21,7 +21,7 @@ This builds, installs, and starts the daemon. Once running, all `sundial` comman
 
 | Action | Command |
 |---|---|
-| Create schedule | `sundial add cron\|solar\|poll ...` |
+| Create schedule | `sundial add cron\|solar\|poll\|at ...` |
 | List schedules | `sundial list` |
 | Show details | `sundial show <id>` |
 | Remove schedule | `sundial remove <id>` |
@@ -83,6 +83,28 @@ Optional flags:
 - `--once` — fire once then complete the schedule. Without it, the poll runs indefinitely. Completed schedules auto-reactivate if `sundial add` is called again with the same command.
 
 The trigger command receives `SUNDIAL_SCHEDULE_ID` and `SUNDIAL_LAST_FIRED_AT` env vars.
+
+### At
+
+One-off fire at an absolute timestamp. Fires exactly once, then auto-completes. Use for "wake me up at 10am tomorrow" or for agents scheduling a future session at a known time (e.g. rejoin a meeting).
+
+```bash
+sundial add at \
+  --at "2026-04-20T10:00:00" \
+  --command "codex exec 'join the standup'" \
+  --name "standup reminder"
+```
+
+Required flags: `--at` (ISO timestamp).
+
+`--at` formats:
+- Naive local time — `2026-04-20T10:00:00` — interpreted in `--timezone` (defaults to machine's local zone).
+- Zoned RFC3339 — `2026-04-20T10:00:00-07:00` or `2026-04-20T17:00:00Z` — `--timezone` is ignored.
+
+Optional flags:
+- `--timezone` — IANA timezone for naive timestamps. Ignored when `--at` includes an explicit offset.
+
+Past timestamps are rejected at creation. There is no `--once` flag — `at` is implicitly one-shot. If the daemon is offline past the 60s grace window, the schedule completes with reason `missed`.
 
 ### Shared Flags (all subcommands)
 

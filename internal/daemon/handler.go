@@ -104,6 +104,7 @@ func (d *Daemon) handleAdd(p model.AddParams) (*model.AddResult, *model.RPCError
 		TriggerCommand: p.TriggerCommand,
 		Interval:       p.Interval,
 		Timeout:        p.Timeout,
+		FireAt:         p.FireAt,
 	}
 	if p.Lat != nil && p.Lon != nil {
 		tz := p.Timezone
@@ -115,6 +116,15 @@ func (d *Daemon) handleAdd(p model.AddParams) (*model.AddResult, *model.RPCError
 			Lon:      *p.Lon,
 			Timezone: tz,
 		}
+	} else if p.Type == model.TriggerTypeAt && p.Timezone != "" {
+		// `at` has no coordinates; the timezone is carried only for display.
+		trigCfg.Location = &model.Location{Timezone: p.Timezone}
+	}
+
+	// `at` fires once by definition — enforce server-side so the CLI doesn't
+	// need to carry --once and reactivation/refresh preserves the semantics.
+	if p.Type == model.TriggerTypeAt {
+		p.Once = true
 	}
 
 	// 2. Parse and validate trigger.
@@ -1004,6 +1014,8 @@ func invalidTriggerError(trigType model.TriggerType, err error) *model.RPCError 
 		info.Example = `sundial add solar --event sunset --offset "-1h" --days mon,tue --lat 37.7749 --lon -122.4194 --command "echo hello"`
 	case model.TriggerTypePoll:
 		info.Example = `sundial add poll --trigger 'check-cmd' --interval 2m --timeout 72h --command "echo hello" --once`
+	case model.TriggerTypeAt:
+		info.Example = `sundial add at --at "2026-04-20T10:00:00" --command "echo hello"`
 	}
 	data, _ := json.Marshal(info)
 

@@ -1,10 +1,10 @@
 # Sundial
 
-A lightweight, agent-first CLI scheduler with cron, solar, and poll triggers for macOS.
+A lightweight, agent-first CLI scheduler with cron, solar, poll, and at triggers for macOS.
 
 ## What it does
 
-Sundial lets you schedule recurring shell commands using standard cron expressions, dynamic solar events (sunrise/sunset with offsets), or condition-gated poll triggers. It is designed for AI coding agents that need to schedule future invocations of themselves -- for example, "check my trash bins every Monday and Tuesday, one hour before sunset" or "notify me when a reply arrives" -- but works equally well for any human who wants solar-aware or event-driven scheduling.
+Sundial lets you schedule shell commands using standard cron expressions, dynamic solar events (sunrise/sunset with offsets), condition-gated poll triggers, or one-off absolute timestamps. It is designed for AI coding agents that need to schedule future invocations of themselves -- for example, "check my trash bins every Monday and Tuesday, one hour before sunset", "notify me when a reply arrives", or "wake me up tomorrow morning at 10am for a client call" -- but works equally well for any human who wants solar-aware or event-driven scheduling.
 
 ## Quick start
 
@@ -35,7 +35,7 @@ Other targets: `make stop`, `make restart`.
 
 | Command     | Description                                      |
 |-------------|--------------------------------------------------|
-| `add cron\|solar\|poll` | Create a new schedule of the given trigger type |
+| `add cron\|solar\|poll\|at` | Create a new schedule of the given trigger type |
 | `list`      | List all active schedules                        |
 | `show <id>` | Show details of a specific schedule              |
 | `remove <id>` | Remove a schedule (or `--all --yes` for all)  |
@@ -109,6 +109,26 @@ sundial add poll \
 ```
 
 `--refresh` updates the existing schedule in place (same ID, fresh timeout countdown) if a schedule with the same `--name` already exists. If no match exists, it creates a new one.
+
+### At
+
+One-off scheduling at an absolute timestamp. The schedule fires exactly once at the given time, then auto-completes. Useful for "wake me at 10am tomorrow" or for agents scheduling a specific future session (e.g. rejoin a meeting at its start time).
+
+```bash
+# Naive local timestamp (defaults to machine's local timezone)
+sundial add at --at "2026-04-20T10:00:00" \
+  --command "say 'client call in five minutes'" \
+  --name "client-call-reminder"
+
+# Pin to a specific timezone
+sundial add at --at "2026-04-20T10:00:00" --timezone "America/Los_Angeles" \
+  --command "codex exec 'join the standup'"
+
+# Zoned RFC3339 (--timezone is ignored; the offset wins)
+sundial add at --at "2026-04-20T17:00:00Z" --command "echo hi"
+```
+
+Past timestamps are rejected at creation. If the daemon is offline when the fire time passes, the schedule is marked completed with reason `missed` on next startup (fires within a 60s grace window; misses beyond it). There is no `--once` flag — `at` is implicitly one-shot.
 
 ### Fire-and-forget with `--detach`
 
@@ -200,7 +220,7 @@ make clean               # remove local binary
 cmd/                 -- cobra commands (CLI wiring)
 internal/
   model/             -- shared types, interfaces, errors
-  trigger/           -- CronTrigger + SolarTrigger + PollTrigger implementations
+  trigger/           -- CronTrigger + SolarTrigger + PollTrigger + AtTrigger implementations
   config/            -- config.yaml loading and validation
   store/             -- file I/O for desired state and runtime state
   gitops/            -- git commit and push operations
@@ -216,6 +236,6 @@ See [CLAUDE.md](CLAUDE.md) for the full package map and agent-facing development
 
 ## Status
 
-**v1** -- macOS only, Codex-focused. Schedules arbitrary shell commands with cron, solar, and poll triggers.
+**v1** -- macOS only, Codex-focused. Schedules arbitrary shell commands with cron, solar, poll, and at triggers.
 
 See [docs/post-v1.md](docs/post-v1.md) for the roadmap, including multi-agent support, Linux compatibility, and session resume.

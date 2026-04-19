@@ -27,6 +27,7 @@ type CompletionReason string
 const (
 	CompletionTriggered CompletionReason = "triggered" // poll trigger condition matched (or --once fired)
 	CompletionTimeout   CompletionReason = "timeout"   // poll timeout expired without condition match
+	CompletionMissed    CompletionReason = "missed"    // at trigger fire time passed beyond grace window while daemon was offline
 )
 
 // DesiredState is the canonical schedule definition stored in the data repo.

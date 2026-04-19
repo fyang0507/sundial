@@ -163,6 +163,22 @@ func (d *Daemon) handleMissedFires() {
 				id, sched.desired.Name, elapsed.Seconds())
 			// Execute in current goroutine during startup.
 			d.execute(sched)
+		} else if sched.desired.Trigger.Type == model.TriggerTypeAt {
+			// `at` fires exactly once. Beyond grace, log one miss and complete
+			// with reason "missed" so the schedule doesn't sit active-but-inert.
+			log.Printf("schedule %s (%s): at trigger missed (%.0fs past fire time), completing",
+				id, sched.desired.Name, elapsed.Seconds())
+			entry := &model.RunLogEntry{
+				Timestamp:    time.Now(),
+				Type:         model.LogTypeMiss,
+				ScheduleID:   id,
+				Reason:       "daemon was not running",
+				ScheduledFor: &nextFire,
+			}
+			if err := d.runLogStore.Append(entry); err != nil {
+				log.Printf("WARN: schedule %s: failed to write miss entry: %v", id, err)
+			}
+			d.completeSchedule(sched, model.CompletionMissed)
 		} else {
 			// Beyond grace period: log misses.
 			d.logMissedFires(sched, nextFire, now)

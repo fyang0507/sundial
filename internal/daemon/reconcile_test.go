@@ -1105,6 +1105,90 @@ func TestAdvanceSchedule_PollNotTimedOutContinues(t *testing.T) {
 	}
 }
 
+func makeAtDesired(id, name string, fireAt time.Time) *model.DesiredState {
+	return &model.DesiredState{
+		ID:        id,
+		Name:      name,
+		CreatedAt: time.Now(),
+		Trigger: model.TriggerConfig{
+			Type:   model.TriggerTypeAt,
+			FireAt: fireAt.UTC().Format(time.RFC3339),
+		},
+		Command: "echo fired",
+		Status:  model.StatusActive,
+		Once:    true,
+	}
+}
+
+func TestHandleMissedFires_AtBeyondGraceCompletes(t *testing.T) {
+	d := newTestDaemon(t)
+
+	// FireAt is 10 minutes in the past — beyond the 60s grace window.
+	fireAt := time.Now().Add(-10 * time.Minute)
+	desired := makeAtDesired("sch_at_miss1", "at-missed", fireAt)
+	if err := d.desiredStore.Write(desired); err != nil {
+		t.Fatal(err)
+	}
+
+	trig, err := trigger.ParseTrigger(desired.Trigger)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	runtime := &model.RuntimeState{
+		ID:         "sch_at_miss1",
+		NextFireAt: fireAt,
+	}
+	if err := d.runtimeStore.Write(runtime); err != nil {
+		t.Fatal(err)
+	}
+
+	d.mu.Lock()
+	d.schedules["sch_at_miss1"] = &activeSchedule{
+		desired: desired,
+		runtime: runtime,
+		trigger: trig,
+	}
+	d.mu.Unlock()
+
+	d.handleMissedFires()
+
+	// Schedule should be removed from the active map.
+	d.mu.RLock()
+	_, ok := d.schedules["sch_at_miss1"]
+	d.mu.RUnlock()
+	if ok {
+		t.Error("expected missed at schedule to be removed from active schedules")
+	}
+
+	// Desired state should be completed with reason "missed".
+	ds, err := d.desiredStore.Read("sch_at_miss1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ds.Status != model.StatusCompleted {
+		t.Errorf("expected desired status 'completed', got %q", ds.Status)
+	}
+	if ds.CompletionReason != model.CompletionMissed {
+		t.Errorf("expected completion reason 'missed', got %q", ds.CompletionReason)
+	}
+
+	// One miss entry should be recorded.
+	entries, err := d.runLogStore.Read("sch_at_miss1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	misses := 0
+	for _, e := range entries {
+		if e.Type == model.LogTypeMiss {
+			misses++
+		}
+	}
+	if misses != 1 {
+		t.Errorf("expected 1 miss log entry, got %d", misses)
+	}
+}
+
 // Ensure the schedules dir exists before running any file-based test.
 func init() {
 	// Temp dirs handle this in each test, nothing needed globally.
