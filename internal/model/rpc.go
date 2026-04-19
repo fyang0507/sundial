@@ -60,6 +60,7 @@ type AddParams struct {
 	TriggerCommand string      `json:"trigger_command,omitempty"` // poll: condition check command
 	Interval       string      `json:"interval,omitempty"`        // poll: check frequency
 	Timeout        string      `json:"timeout,omitempty"`         // poll: max lifetime, e.g. "72h"
+	FireAt         string      `json:"fire_at,omitempty"`         // at: RFC3339 absolute timestamp (UTC)
 	Command        string      `json:"command"`
 	Name           string      `json:"name,omitempty"`
 	UserRequest    string      `json:"user_request,omitempty"`

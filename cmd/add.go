@@ -19,7 +19,8 @@ var addCmd = &cobra.Command{
 
   sundial add cron    fixed cron expression
   sundial add solar   anchored to sunrise/sunset
-  sundial add poll    recurring condition check`,
+  sundial add poll    recurring condition check
+  sundial add at      one-off at an absolute timestamp`,
 }
 
 var (

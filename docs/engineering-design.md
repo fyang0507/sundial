@@ -176,6 +176,8 @@ type Trigger interface {
 Implementations:
 - **CronTrigger** -- wraps a cron expression. `NextFireTime` delegates to `robfig/cron` parser.
 - **SolarTrigger** -- computes solar event time for the next matching day, applies offset. Uses NREL SPA algorithm or `go-sunrise` library.
+- **PollTrigger** -- runs a condition-check command at a fixed interval; the main command fires only when the check exits 0. `NextFireTime` is simply `after + interval`; timeout bounds the schedule's total lifetime.
+- **AtTrigger** -- fires exactly once at an absolute UTC timestamp, then reports no further fires. `NextFireTime` returns `FireAt` if strictly after `after`, else zero. Combined with implicit `once=true`, the schedule auto-completes after firing. If the daemon is offline past the 60s grace window, the schedule is completed with reason `missed`.
 
 ### Recomputation Strategy: Next-Occurrence-Only
 
@@ -224,7 +226,7 @@ When the Mac is powered off and restarted X days later:
 
 ```
 sundial                                 # prints status summary + help
-sundial add cron|solar|poll [flags]     # create a new schedule (--dry-run to preview without creating)
+sundial add cron|solar|poll|at [flags]  # create a new schedule (--dry-run to preview without creating)
 sundial list [--json]                   # list all schedules
 sundial remove <id>              # remove a schedule
 sundial show <id> [--json]       # show details of one schedule
