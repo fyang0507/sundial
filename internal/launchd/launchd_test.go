@@ -24,7 +24,6 @@ func TestGeneratePlist(t *testing.T) {
 	cfg := PlistConfig{
 		Label:        Label,
 		BinaryPath:   "/usr/local/bin/sundial",
-		ConfigPath:   "/etc/sundial/config.yaml",
 		LogPath:      "/tmp/sundial.log",
 		DataRepoPath: "/home/user/data-repo",
 	}
@@ -49,15 +48,14 @@ func TestGeneratePlist(t *testing.T) {
 
 	// Verify expected fields are present.
 	checks := map[string]string{
-		"Label":        "<string>" + Label + "</string>",
-		"BinaryPath":   "<string>/usr/local/bin/sundial</string>",
-		"ConfigPath":   "<string>/etc/sundial/config.yaml</string>",
-		"LogPath":      "<string>/tmp/sundial.log</string>",
-		"DataRepoPath": "<string>/home/user/data-repo</string>",
-		"RunAtLoad":    "<true/>",
-		"KeepAlive":    "<true/>",
-		"daemon arg":   "<string>daemon</string>",
-		"--config arg": "<string>--config</string>",
+		"Label":           "<string>" + Label + "</string>",
+		"BinaryPath":      "<string>/usr/local/bin/sundial</string>",
+		"LogPath":         "<string>/tmp/sundial.log</string>",
+		"DataRepoPath":    "<string>/home/user/data-repo</string>",
+		"RunAtLoad":       "<true/>",
+		"KeepAlive":       "<true/>",
+		"daemon arg":      "<string>daemon</string>",
+		"--data-repo arg": "<string>--data-repo</string>",
 	}
 
 	for name, needle := range checks {
@@ -88,7 +86,6 @@ func TestInstall(t *testing.T) {
 	cfg := PlistConfig{
 		Label:        Label,
 		BinaryPath:   "/usr/local/bin/sundial",
-		ConfigPath:   "/etc/sundial/config.yaml",
 		LogPath:      filepath.Join(tmpDir, "sundial.log"),
 		DataRepoPath: tmpDir,
 	}

@@ -7,7 +7,8 @@ Agent-first CLI scheduler with cron, solar, poll, and at triggers. Go project ta
 ```bash
 make build                    # build binary
 make install                  # build and install to PATH
-make start                    # build, install, and start daemon (uses config.yaml in repo root)
+make start                    # build, install, scaffold the data repo, and start the daemon
+                              # (data repo comes from sundial.config.dev.yaml in this repo)
 make start launchd=1          # same + register with launchd for auto-start on login
 make stop                     # stop the daemon
 make restart                  # stop + start
@@ -25,7 +26,9 @@ Sundial requires a running daemon. If `sundial health` shows the daemon is not r
 make start
 ```
 
-This builds the binary, installs it, starts the daemon using `config.yaml` in this repo, and runs a health check. The only required config field is `data_repo` (already set in `config.yaml`).
+This builds the binary, installs it, resolves the data repo from `sundial.config.dev.yaml` (copy `sundial.config.dev.yaml.example` if you haven't already), scaffolds the data repo via `sundial setup` (workspace marker, `<data_repo>/sundial/config.yaml`, skills sync), starts the daemon, and runs a health check.
+
+The data repo is resolved in this order: `SUNDIAL_DATA_REPO` env var → `sundial.config.dev.yaml` next to the binary → walk up from cwd for `.agents/workspace.yaml`.
 
 CLI commands (`sundial add`, `sundial list`, etc.) connect to the daemon over a well-known socket path and do not need a config file.
 
@@ -42,7 +45,9 @@ cmd/                 → cobra commands (thin wiring layer)
 internal/
   model/             → all shared types, interfaces, errors (zero deps — everything imports this)
   trigger/           → CronTrigger + SolarTrigger + PollTrigger + AtTrigger implementing model.Trigger
-  config/            → config.yaml loading, validation, path expansion
+  config/            → data-repo resolution (env / dev yaml / workspace walk-up), config loading, workspace.yaml stamping
+  scaffold/          → embedded skills + config template used by `sundial setup`
+  version/           → single source of truth for the sundial version
   store/             → file I/O: desired state (data repo), runtime state, run logs (local)
   gitops/            → git precondition checks, commit --only, push
   geocode/           → Nominatim geocoding + timezone from coordinates

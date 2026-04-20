@@ -143,6 +143,9 @@ func FormatHealthResult(r *model.HealthResult, jsonMode bool) string {
 	kv(&b, "pid", fmt.Sprintf("%d", r.PID))
 	kv(&b, "uptime", r.Uptime)
 	kv(&b, "data_repo", r.DataRepo)
+	if r.Config != "" {
+		kv(&b, "config", r.Config)
+	}
 	kv(&b, "socket_path", r.SocketPath)
 	kv(&b, "log_level", r.LogLevel)
 	kv(&b, "log_file", r.LogFile)

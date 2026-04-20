@@ -6,6 +6,7 @@ import (
 
 	"github.com/fyang0507/sundial/internal/config"
 	"github.com/fyang0507/sundial/internal/daemon"
+	"github.com/fyang0507/sundial/internal/model"
 	"github.com/spf13/cobra"
 )
 
@@ -16,32 +17,25 @@ var daemonCmd = &cobra.Command{
 	Run:   runDaemon,
 }
 
-var daemonConfigPath string
+var daemonDataRepoFlag string
 
 func init() {
 	rootCmd.AddCommand(daemonCmd)
 
-	daemonCmd.Flags().StringVar(&daemonConfigPath, "config", "", "path to config.yaml")
+	daemonCmd.Flags().StringVar(&daemonDataRepoFlag, "data-repo", "", "path to the data repo (overrides SUNDIAL_DATA_REPO and walk-up)")
 }
 
 func runDaemon(cmd *cobra.Command, args []string) {
-	// Load config: use --config flag or discover automatically.
-	var cfgPath string
+	// Resolve: explicit --data-repo wins, otherwise the standard resolver.
+	var cfg *model.Config
 	var err error
-
-	if daemonConfigPath != "" {
-		cfgPath = config.ExpandPath(daemonConfigPath)
+	if daemonDataRepoFlag != "" {
+		cfg, _, err = config.LoadForDataRepo(daemonDataRepoFlag)
 	} else {
-		cfgPath, err = config.FindConfigPath()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %s\n", err)
-			os.Exit(1)
-		}
+		cfg, _, err = config.LoadAndResolve()
 	}
-
-	cfg, err := config.Load(cfgPath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error loading config: %s\n", err)
+		fmt.Fprintf(os.Stderr, "Error: %s\n", err)
 		os.Exit(1)
 	}
 

@@ -15,7 +15,33 @@ If `which sundial` fails or `sundial health` shows the daemon is not running, st
 cd <sundial-repo> && make start [launchd=1]
 ```
 
-This builds, installs, and starts the daemon. Once running, all `sundial` commands work from any directory.
+This builds, installs, scaffolds the data repo (workspace marker, sundial config, skills sync), and starts the daemon. Once running, all `sundial` commands work from any directory.
+
+### Data repo resolution
+
+Sundial stores schedules and its config inside a shared **data repo** — the same git repo used by outreach and any other agent tooling. The CLI resolves the data repo in this order:
+
+1. `SUNDIAL_DATA_REPO` environment variable (explicit override)
+2. `sundial.config.dev.yaml` next to the running binary (dev-local pointer)
+3. Walk up from cwd looking for `.agents/workspace.yaml`
+
+Run `sundial setup --data-repo <path>` to scaffold a new data repo: it writes `.agents/workspace.yaml` (stamping `tools.sundial.version`), creates `<data_repo>/sundial/config.yaml` from a template, and syncs these skills to `<data_repo>/.agents/skills/sundial/`. It is idempotent.
+
+`sundial health` reports the resolved `data_repo` and `config` paths so you can confirm which data repo the running daemon is using.
+
+### Data repo layout
+
+```
+<data_repo>/
+  .agents/
+    workspace.yaml        # shared across tools; sundial registers under tools.sundial
+    skills/sundial/       # this skill file, synced by `sundial setup`
+  sundial/
+    config.yaml           # daemon options (optional; defaults apply)
+    schedules/            # schedule definitions, one JSON per schedule
+```
+
+Runtime state (`~/.config/sundial/state/`) and run logs (`~/.config/sundial/logs/`) stay local to the machine — they are not part of the data repo.
 
 ## Commands
 
@@ -30,6 +56,7 @@ This builds, installs, and starts the daemon. Once running, all `sundial` comman
 | Resume schedule | `sundial unpause <id>` |
 | Health check | `sundial health` |
 | Reload config | `sundial reload` |
+| Scaffold data repo | `sundial setup [--data-repo <path>]` |
 | Look up coordinates | `sundial geocode "<address>"` |
 
 ## Creating Schedules

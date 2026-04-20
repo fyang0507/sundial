@@ -616,11 +616,20 @@ func (d *Daemon) handleHealth() (*model.HealthResult, *model.RPCError) {
 	scheduleCount := len(d.schedules)
 	d.mu.RUnlock()
 
+	configPath := ""
+	if d.cfg.DataRepo != "" {
+		candidate := filepath.Join(d.cfg.DataRepo, "sundial", "config.yaml")
+		if _, err := os.Stat(candidate); err == nil {
+			configPath = candidate
+		}
+	}
+
 	return &model.HealthResult{
 		DaemonRunning: true,
 		PID:           os.Getpid(),
 		Uptime:        time.Since(d.startedAt).Truncate(time.Second).String(),
 		DataRepo:      d.cfg.DataRepo,
+		Config:        configPath,
 		SocketPath:    d.cfg.Daemon.SocketPath,
 		LogLevel:      d.cfg.Daemon.LogLevel,
 		LogFile:       d.cfg.Daemon.LogFile,

@@ -164,6 +164,7 @@ type HealthResult struct {
 	PID           int    `json:"pid"`
 	Uptime        string `json:"uptime"`
 	DataRepo      string `json:"data_repo"`
+	Config        string `json:"config"` // resolved config file path (<data_repo>/sundial/config.yaml); empty if absent
 	SocketPath    string `json:"socket_path"`
 	LogLevel      string `json:"log_level"`
 	LogFile       string `json:"log_file"`
