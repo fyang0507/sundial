@@ -20,7 +20,6 @@ const PlistDir = "~/Library/LaunchAgents"
 type PlistConfig struct {
 	Label        string
 	BinaryPath   string
-	ConfigPath   string
 	LogPath      string
 	DataRepoPath string
 }
@@ -51,8 +50,8 @@ const plistTemplate = `<?xml version="1.0" encoding="UTF-8"?>
     <array>
         <string>{{.BinaryPath}}</string>
         <string>daemon</string>
-        <string>--config</string>
-        <string>{{.ConfigPath}}</string>
+        <string>--data-repo</string>
+        <string>{{.DataRepoPath}}</string>
     </array>
     <key>RunAtLoad</key>
     <true/>

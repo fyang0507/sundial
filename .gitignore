@@ -15,5 +15,5 @@ Thumbs.db
 # Go
 /vendor/
 
-# Config
-config.yaml
+# Dev-local config (pointer to the data repo for dev builds)
+sundial.config.dev.yaml

@@ -1,17 +1,12 @@
-BINARY    := sundial
-PREFIX    := $(shell go env GOPATH)/bin
-CONFIG    := $(CURDIR)/config.yaml
-DATA_REPO := $(shell grep '^data_repo:' config.yaml 2>/dev/null | sed 's/data_repo: *"\([^"]*\)".*/\1/' | sed "s|~|$$HOME|")
+BINARY   := sundial
+PREFIX   := $(shell go env GOPATH)/bin
+DEV_YAML := $(CURDIR)/sundial.config.dev.yaml
+DATA_REPO := $(shell grep '^data_repo_path:' "$(DEV_YAML)" 2>/dev/null | sed 's/data_repo_path: *"\([^"]*\)".*/\1/' | sed "s|~|$$HOME|")
 
-.PHONY: build install uninstall test vet clean start stop restart
+.PHONY: build install uninstall test vet clean start stop restart setup
 
 build:
 	go build -o $(BINARY) .
-ifdef DATA_REPO
-	@mkdir -p "$(DATA_REPO)/.agents/skills"
-	@cp -R skills/sundial "$(DATA_REPO)/.agents/skills/"
-	@echo "skills/sundial copied to $(DATA_REPO)/.agents/skills/sundial"
-endif
 
 install: build
 	install -d $(PREFIX)
@@ -22,20 +17,29 @@ uninstall:
 	rm -f $(PREFIX)/$(BINARY)
 	@echo "$(BINARY) removed from $(PREFIX)"
 
-# Start the daemon in the background using this repo's config.yaml.
-# Use `make start launchd=1` to also register with launchd for auto-start on login.
-start: install
+# Scaffold the data repo (workspace.yaml, sundial/config.yaml, skills sync).
+# Idempotent — safe to rerun.
+setup: install
+ifndef DATA_REPO
+	$(error data_repo_path not set in $(DEV_YAML); copy sundial.config.dev.yaml.example and fill it in)
+endif
+	SUNDIAL_DATA_REPO="$(DATA_REPO)" sundial setup
+
+# Start the daemon in the background using the data repo resolved from
+# sundial.config.dev.yaml. Use `make start launchd=1` to also register with
+# launchd for auto-start on login.
+start: setup
 	@if sundial health --json 2>/dev/null | grep -q '"daemon_running":true'; then \
 		echo "daemon is already running"; \
 	else \
-		SUNDIAL_CONFIG="$(CONFIG)" sundial daemon &>/dev/null & \
+		SUNDIAL_DATA_REPO="$(DATA_REPO)" sundial daemon &>/dev/null & \
 		sleep 1; \
 		echo "daemon started (pid $$!)"; \
 	fi
 ifdef launchd
-	SUNDIAL_CONFIG="$(CONFIG)" sundial install
+	SUNDIAL_DATA_REPO="$(DATA_REPO)" sundial install
 endif
-	@SUNDIAL_CONFIG="$(CONFIG)" sundial health
+	@SUNDIAL_DATA_REPO="$(DATA_REPO)" sundial health
 
 # Stop the daemon.
 stop:

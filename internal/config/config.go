@@ -10,8 +10,17 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// SundialConfigRel is the data-repo-relative path to sundial's daemon config.
+const SundialConfigRel = "sundial/config.yaml"
+
+// ConfigPath returns the resolved config file path for a given data repo.
+func ConfigPath(dataRepo string) string {
+	return filepath.Join(dataRepo, SundialConfigRel)
+}
+
 // Load reads a YAML config file at path, unmarshals it into model.Config,
 // applies defaults for zero-value fields, and expands ~ in all path fields.
+// Does not populate DataRepo — callers inject that from the resolver.
 func Load(path string) (*model.Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -27,6 +36,44 @@ func Load(path string) (*model.Config, error) {
 	expandPaths(&cfg)
 
 	return &cfg, nil
+}
+
+// LoadAndResolve resolves the data repo (env/dev/walk-up), loads the daemon
+// config from <data_repo>/sundial/config.yaml (defaults applied if absent),
+// injects DataRepo, and returns the populated Config along with the resolved
+// config-file path (empty string if no file was present).
+func LoadAndResolve() (*model.Config, string, error) {
+	res, err := ResolveDataRepo()
+	if err != nil {
+		return nil, "", err
+	}
+	return loadForDataRepo(res.DataRepo)
+}
+
+// LoadForDataRepo is LoadAndResolve but with an explicit data repo path,
+// bypassing resolution. Used by `sundial setup --data-repo`.
+func LoadForDataRepo(dataRepo string) (*model.Config, string, error) {
+	return loadForDataRepo(ExpandPath(dataRepo))
+}
+
+func loadForDataRepo(dataRepo string) (*model.Config, string, error) {
+	cfgPath := ConfigPath(dataRepo)
+	cfg := &model.Config{}
+
+	if data, err := os.ReadFile(cfgPath); err == nil {
+		if err := yaml.Unmarshal(data, cfg); err != nil {
+			return nil, cfgPath, fmt.Errorf("parsing %s: %w", cfgPath, err)
+		}
+	} else if !os.IsNotExist(err) {
+		return nil, cfgPath, fmt.Errorf("reading %s: %w", cfgPath, err)
+	} else {
+		cfgPath = "" // absent, not an error — defaults fill in
+	}
+
+	cfg.DataRepo = dataRepo
+	applyDefaults(cfg)
+	expandPaths(cfg)
+	return cfg, cfgPath, nil
 }
 
 // applyDefaults fills in default values from model.Default* constants
@@ -81,7 +128,7 @@ func ExpandPath(p string) string {
 //   - LogLevel (if set) is one of: debug, info, warn, error
 func Validate(cfg *model.Config) error {
 	if cfg.DataRepo == "" {
-		return fmt.Errorf("data_repo is required in config.yaml: %w", model.ErrConfigInvalid)
+		return fmt.Errorf("data_repo is required: %w", model.ErrConfigInvalid)
 	}
 
 	info, err := os.Stat(cfg.DataRepo)
@@ -106,41 +153,4 @@ func Validate(cfg *model.Config) error {
 	}
 
 	return nil
-}
-
-// FindConfigPath locates a config.yaml file by:
-//  1. Checking the SUNDIAL_CONFIG environment variable
-//  2. Looking in the directory of the running executable
-//  3. Looking at ~/.config/sundial/config.yaml
-//
-// Returns model.ErrConfigNotFound if no location has a config file.
-func FindConfigPath() (string, error) {
-	// Check env var first.
-	if envPath := os.Getenv("SUNDIAL_CONFIG"); envPath != "" {
-		envPath = ExpandPath(envPath)
-		if _, err := os.Stat(envPath); err == nil {
-			return envPath, nil
-		}
-	}
-
-	// Check directory of the running executable.
-	exe, err := os.Executable()
-	if err == nil {
-		exeDir := filepath.Dir(exe)
-		candidate := filepath.Join(exeDir, "config.yaml")
-		if _, err := os.Stat(candidate); err == nil {
-			return candidate, nil
-		}
-	}
-
-	// Check XDG default location.
-	home, err := os.UserHomeDir()
-	if err == nil {
-		xdgPath := filepath.Join(home, ".config", "sundial", "config.yaml")
-		if _, err := os.Stat(xdgPath); err == nil {
-			return xdgPath, nil
-		}
-	}
-
-	return "", model.ErrConfigNotFound
 }

@@ -23,12 +23,10 @@ func init() {
 }
 
 func runHealth(cmd *cobra.Command, args []string) {
-	// Determine socket path: use config if available, otherwise the well-known default.
+	// Determine socket path: use resolved config if available, otherwise the default.
 	socketPath := config.ExpandPath(model.DefaultSocketPath)
-	if cfgPath, err := config.FindConfigPath(); err == nil {
-		if cfg, err := config.Load(cfgPath); err == nil {
-			socketPath = cfg.Daemon.SocketPath
-		}
+	if cfg, _, err := config.LoadAndResolve(); err == nil {
+		socketPath = cfg.Daemon.SocketPath
 	}
 
 	// Ask the daemon — it is the source of truth for all health checks.

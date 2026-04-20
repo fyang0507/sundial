@@ -1,0 +1,12 @@
+# Dev-local pointer — copy to sundial.config.dev.yaml and set data_repo_path.
+# Only consulted when this file sits next to the running sundial binary (dev build).
+#
+# In production, resolution is:
+#   1. SUNDIAL_DATA_REPO env var
+#   2. sundial.config.dev.yaml next to the binary (this file)
+#   3. walk up from cwd looking for .agents/workspace.yaml
+#
+# Daemon options (socket_path, log_level, state paths) live in
+# <data_repo>/sundial/config.yaml — run `sundial setup` to scaffold it.
+
+data_repo_path: "~/path/to/your/data-repo"

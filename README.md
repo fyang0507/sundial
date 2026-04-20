@@ -11,10 +11,11 @@ Sundial lets you schedule shell commands using standard cron expressions, dynami
 **Prerequisites:** Go 1.21+, macOS, a git repository for schedule data.
 
 ```bash
-# Edit config.yaml: set data_repo to the path of your git data repo
-vim config.yaml
+# Copy the dev-local template and point it at your data repo:
+cp sundial.config.dev.yaml.example sundial.config.dev.yaml
+vim sundial.config.dev.yaml   # set data_repo_path
 
-# Build, install, and start the daemon
+# Build, install, scaffold the data repo, and start the daemon
 make start
 
 # Create your first schedule
@@ -23,7 +24,7 @@ sundial add cron --cron "0 9 * * 1-5" \
   --name "weekday standup"
 ```
 
-`make start` builds the binary, installs it to PATH, starts the daemon using `config.yaml` in the repo root, and runs a health check. To also register the daemon with launchd (auto-start on login):
+`make start` builds the binary, installs it to PATH, runs `sundial setup` against the data repo (writes `.agents/workspace.yaml`, scaffolds `<data_repo>/sundial/config.yaml`, and syncs skills), starts the daemon, and runs a health check. To also register the daemon with launchd (auto-start on login):
 
 ```bash
 make start launchd=1
@@ -145,13 +146,15 @@ With `--detach`, sundial spawns the command via `exec.Start()` with its own sess
 
 ## Configuration
 
-Place `config.yaml` in the project root alongside the sundial binary (or set `SUNDIAL_CONFIG` / pass `--config`). The only required field is `data_repo` -- everything else has sensible defaults.
+Sundial stores schedules in a shared **data repo** (a git repo shared with any other agent tooling in the stack, e.g. outreach). The CLI resolves the data repo in this order:
 
-```yaml
-data_repo: "~/data_repo"   # REQUIRED -- path to git repo for schedule definitions
-```
+1. `SUNDIAL_DATA_REPO` environment variable (explicit override)
+2. `sundial.config.dev.yaml` next to the running binary (dev-local pointer, gitignored)
+3. Walk up from cwd looking for `.agents/workspace.yaml`
 
-All other fields are optional and default to:
+Run `sundial setup --data-repo <path>` once per data repo to scaffold it: the command writes `.agents/workspace.yaml` (stamping `tools.sundial.version`), creates `<data_repo>/sundial/config.yaml` from a template, and syncs skills. It is idempotent.
+
+Daemon options live in `<data_repo>/sundial/config.yaml`; all fields are optional and default to:
 
 ```yaml
 daemon:
@@ -221,7 +224,9 @@ cmd/                 -- cobra commands (CLI wiring)
 internal/
   model/             -- shared types, interfaces, errors
   trigger/           -- CronTrigger + SolarTrigger + PollTrigger + AtTrigger implementations
-  config/            -- config.yaml loading and validation
+  config/            -- data-repo resolution, config loading, workspace.yaml
+  scaffold/          -- embedded skills + config template for `sundial setup`
+  version/           -- single source of truth for the version string
   store/             -- file I/O for desired state and runtime state
   gitops/            -- git commit and push operations
   geocode/           -- Nominatim geocoding + timezone lookup

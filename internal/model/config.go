@@ -9,10 +9,12 @@ const (
 	DefaultLogsPath   = "~/.config/sundial/logs/"
 )
 
-// Config represents the daemon configuration loaded from config.yaml.
-// The only required field is DataRepo.
+// Config represents the daemon configuration loaded from
+// <data_repo>/sundial/config.yaml. DataRepo is injected at load time from
+// the resolver (SUNDIAL_DATA_REPO / sundial.config.dev.yaml / workspace.yaml
+// walk-up) — it is not a field in the on-disk schema.
 type Config struct {
-	DataRepo string       `yaml:"data_repo"`
+	DataRepo string       `yaml:"-"`
 	Daemon   DaemonConfig `yaml:"daemon"`
 	State    StateConfig  `yaml:"state"`
 }

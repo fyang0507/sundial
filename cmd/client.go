@@ -8,20 +8,16 @@ import (
 	"github.com/fyang0507/sundial/internal/model"
 )
 
-// getClient loads the config and returns an IPC client connected to the daemon.
-// If no config file is found, it falls back to the default socket path so that
-// CLI commands work without requiring SUNDIAL_CONFIG or a config file.
+// getClient resolves the data repo, loads the daemon config to learn the
+// socket path, and returns an IPC client. If the data repo cannot be
+// resolved, it falls back to the default socket path so that CLI commands
+// can still probe the daemon (e.g. `sundial health`).
 func getClient() (*ipc.Client, error) {
-	cfgPath, err := config.FindConfigPath()
+	cfg, _, err := config.LoadAndResolve()
 	if err != nil {
-		if errors.Is(err, model.ErrConfigNotFound) {
-			socketPath := config.ExpandPath(model.DefaultSocketPath)
-			return ipc.NewClient(socketPath), nil
+		if errors.Is(err, model.ErrDataRepoNotResolved) {
+			return ipc.NewClient(config.ExpandPath(model.DefaultSocketPath)), nil
 		}
-		return nil, err
-	}
-	cfg, err := config.Load(cfgPath)
-	if err != nil {
 		return nil, err
 	}
 	return ipc.NewClient(cfg.Daemon.SocketPath), nil
