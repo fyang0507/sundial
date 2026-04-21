@@ -26,8 +26,9 @@ endif
 	SUNDIAL_DATA_REPO="$(DATA_REPO)" sundial setup
 
 # Start the daemon in the background using the data repo resolved from
-# sundial.config.dev.yaml. Use `make start launchd=1` to also register with
-# launchd for auto-start on login.
+# sundial.config.dev.yaml, and register with launchd so it auto-starts on
+# login. The installed plist wraps the daemon with `caffeinate -i` to
+# prevent idle sleep — a scheduler that sleeps misses fires.
 start: setup
 	@if sundial health --json 2>/dev/null | grep -q '"daemon_running":true'; then \
 		echo "daemon is already running"; \
@@ -36,9 +37,7 @@ start: setup
 		sleep 1; \
 		echo "daemon started (pid $$!)"; \
 	fi
-ifdef launchd
 	SUNDIAL_DATA_REPO="$(DATA_REPO)" sundial install
-endif
 	@SUNDIAL_DATA_REPO="$(DATA_REPO)" sundial health
 
 # Stop the daemon.

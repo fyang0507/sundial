@@ -24,11 +24,7 @@ sundial add cron --cron "0 9 * * 1-5" \
   --name "weekday standup"
 ```
 
-`make start` builds the binary, installs it to PATH, runs `sundial setup` against the data repo (writes `.agents/workspace.yaml`, scaffolds `<data_repo>/sundial/config.yaml`, and syncs skills), starts the daemon, and runs a health check. To also register the daemon with launchd (auto-start on login):
-
-```bash
-make start launchd=1
-```
+`make start` builds the binary, installs it to PATH, runs `sundial setup` against the data repo (writes `.agents/workspace.yaml`, scaffolds `<data_repo>/sundial/config.yaml`, and syncs skills), starts the daemon, registers it with launchd for auto-start on login, and runs a health check. The installed plist wraps the daemon with `caffeinate -i`, which holds a `PreventUserIdleSystemSleep` assertion for the daemon's lifetime — a scheduler that idle-sleeps misses fires. Explicit user-initiated sleep still works, so laptops still sleep when you close the lid on purpose.
 
 Other targets: `make stop`, `make restart`.
 
@@ -208,8 +204,7 @@ Design follows the [CLI-for-Agents](https://github.com/cursor/plugins/blob/main/
 ```bash
 make build               # build binary
 make install             # build and install to PATH
-make start               # build, install, start daemon
-make start launchd=1     # same + register with launchd
+make start               # build, install, start daemon, register with launchd
 make stop                # stop the daemon
 make restart             # stop + start
 make test                # run all tests

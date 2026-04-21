@@ -56,12 +56,23 @@ func TestGeneratePlist(t *testing.T) {
 		"KeepAlive":       "<true/>",
 		"daemon arg":      "<string>daemon</string>",
 		"--data-repo arg": "<string>--data-repo</string>",
+		"caffeinate":      "<string>/usr/bin/caffeinate</string>",
+		"caffeinate flag": "<string>-i</string>",
 	}
 
 	for name, needle := range checks {
 		if !strings.Contains(output, needle) {
 			t.Errorf("plist missing expected %s content %q", name, needle)
 		}
+	}
+
+	// Verify caffeinate wraps the daemon: it must appear before the binary
+	// path inside ProgramArguments so launchd invokes caffeinate as PID 1
+	// of the job and the daemon runs as its child.
+	caffeineIdx := strings.Index(output, "<string>/usr/bin/caffeinate</string>")
+	binaryIdx := strings.Index(output, "<string>/usr/local/bin/sundial</string>")
+	if caffeineIdx < 0 || binaryIdx < 0 || caffeineIdx >= binaryIdx {
+		t.Errorf("caffeinate must precede the sundial binary in ProgramArguments (caffeineIdx=%d, binaryIdx=%d)", caffeineIdx, binaryIdx)
 	}
 }
 

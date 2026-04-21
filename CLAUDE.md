@@ -7,9 +7,9 @@ Agent-first CLI scheduler with cron, solar, poll, and at triggers. Go project ta
 ```bash
 make build                    # build binary
 make install                  # build and install to PATH
-make start                    # build, install, scaffold the data repo, and start the daemon
+make start                    # build, install, scaffold the data repo, start the daemon,
+                              # and register with launchd for auto-start on login
                               # (data repo comes from sundial.config.dev.yaml in this repo)
-make start launchd=1          # same + register with launchd for auto-start on login
 make stop                     # stop the daemon
 make restart                  # stop + start
 make test                     # run all tests
@@ -26,7 +26,7 @@ Sundial requires a running daemon. If `sundial health` shows the daemon is not r
 make start
 ```
 
-This builds the binary, installs it, resolves the data repo from `sundial.config.dev.yaml` (copy `sundial.config.dev.yaml.example` if you haven't already), scaffolds the data repo via `sundial setup` (workspace marker, `<data_repo>/sundial/config.yaml`, skills sync), starts the daemon, and runs a health check.
+This builds the binary, installs it, resolves the data repo from `sundial.config.dev.yaml` (copy `sundial.config.dev.yaml.example` if you haven't already), scaffolds the data repo via `sundial setup` (workspace marker, `<data_repo>/sundial/config.yaml`, skills sync), starts the daemon, registers it with launchd, and runs a health check. The installed plist wraps the daemon with `caffeinate -i` so it holds a `PreventUserIdleSystemSleep` assertion for its lifetime — otherwise launchd suspends the job with the system and fires are missed. Explicit user-initiated sleep still works.
 
 The data repo is resolved in this order: `SUNDIAL_DATA_REPO` env var → `sundial.config.dev.yaml` next to the binary → walk up from cwd for `.agents/workspace.yaml`.
 

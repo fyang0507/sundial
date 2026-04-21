@@ -40,6 +40,11 @@ func DefaultRunner() CommandRunner {
 	return &realRunner{}
 }
 
+// ProgramArguments is wrapped with `/usr/bin/caffeinate -i` so the daemon
+// holds a PreventUserIdleSystemSleep assertion for its entire lifetime.
+// caffeinate exits when its child exits, so uninstall or a daemon crash
+// releases the assertion cleanly. `-i` blocks idle sleep only; explicit
+// user-initiated sleep still works, which is the right default for laptops.
 const plistTemplate = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -48,6 +53,8 @@ const plistTemplate = `<?xml version="1.0" encoding="UTF-8"?>
     <string>{{.Label}}</string>
     <key>ProgramArguments</key>
     <array>
+        <string>/usr/bin/caffeinate</string>
+        <string>-i</string>
         <string>{{.BinaryPath}}</string>
         <string>daemon</string>
         <string>--data-repo</string>

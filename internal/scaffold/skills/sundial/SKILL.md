@@ -12,10 +12,10 @@ CLI scheduler with cron, solar, poll, and at triggers. A background daemon manag
 If `which sundial` fails or `sundial health` shows the daemon is not running, start it from the sundial repo:
 
 ```bash
-cd <sundial-repo> && make start [launchd=1]
+cd <sundial-repo> && make start
 ```
 
-This builds, installs, scaffolds the data repo (workspace marker, sundial config, skills sync), and starts the daemon. Once running, all `sundial` commands work from any directory.
+This builds, installs, scaffolds the data repo (workspace marker, sundial config, skills sync), starts the daemon, and registers it with launchd (auto-start on login, wrapped with `caffeinate -i` to prevent idle sleep). Once running, all `sundial` commands work from any directory.
 
 ### Data repo resolution
 
