@@ -1,47 +1,93 @@
----
-name: sundial
-description: Scheduler service for agent. Cron, solar, poll, and at triggers.
----
+# Scheduling with Sundial
 
-# Sundial
+For agents (and humans) who want sundial to run a command at some future point. If you're building a tool that uses sundial as infrastructure, read [integrating.md](integrating.md) instead. For setup and data-repo resolution, see [SKILL.md](SKILL.md).
 
-CLI scheduler with cron, solar, poll, and at triggers. A background daemon manages all schedules over IPC. All commands accept `--json`.
+The schedule you most likely care about is **yourself**: use sundial to invoke a future coding-agent session — fresh or resumed — at an absolute time, on a recurring cadence, or when an external condition becomes true.
 
-## Setup
+## Invoke your future self
 
-If `which sundial` fails or `sundial health` shows the daemon is not running, start it from the sundial repo:
+Sundial does not know or care what a command is; it just runs a shell string. That means any headless agent CLI works, including session resume — and because sundial is agent-agnostic, the same sundial invocation works equally well whether you drive Codex or Claude Code. Pick whichever your workflow uses.
+
+**Codex** (NDJSON; session id arrives on the first `thread.started` line):
+```bash
+codex exec --yolo --json "<prompt>"                      # new session
+codex exec resume <thread_id> --yolo --json "<prompt>"   # resume
+```
+
+**Claude Code** (single JSON; `session_id` field):
+```bash
+claude --dangerously-skip-permissions -p "<prompt>" --output-format json               # new
+claude --resume <session_id> --dangerously-skip-permissions -p "<prompt>" --output-format json   # resume
+```
+
+### Wake up as a fresh session tomorrow at 10am
 
 ```bash
-cd <sundial-repo> && make start
+# Codex
+sundial add at --at "2026-04-24T10:00:00" \
+  --command 'codex exec --yolo "join the 10am standup, summarize the doc in ~/work/notes.md"' \
+  --name "standup-wakeup" \
+  --user-request "join standup tomorrow at 10am"
+
+# Claude Code
+sundial add at --at "2026-04-24T10:00:00" \
+  --command 'claude --dangerously-skip-permissions -p "join the 10am standup, summarize the doc in ~/work/notes.md" --output-format json' \
+  --name "standup-wakeup" \
+  --user-request "join standup tomorrow at 10am"
 ```
 
-This builds, installs, scaffolds the data repo (workspace marker, sundial config, skills sync), starts the daemon, and registers it with launchd (auto-start on login, wrapped with `caffeinate -i` to prevent idle sleep). Once running, all `sundial` commands work from any directory.
+### Continue THIS conversation later (resume the current session)
 
-### Data repo resolution
+```bash
+# Codex — thread id captured from this session's `thread.started` NDJSON line
+sundial add at --at "2026-04-24T10:00:00" \
+  --command 'codex exec resume abc123 --yolo "continue where we left off"' \
+  --name "resume-session"
 
-Sundial stores schedules and its config inside a shared **data repo** — the same git repo used by outreach and any other agent tooling. The CLI resolves the data repo in this order:
-
-1. `SUNDIAL_DATA_REPO` environment variable (explicit override)
-2. `sundial.config.dev.yaml` next to the running binary (dev-local pointer)
-3. Walk up from cwd looking for `.agents/workspace.yaml`
-
-Run `sundial setup --data-repo <path>` to scaffold a new data repo: it writes `.agents/workspace.yaml` (stamping `tools.sundial.version`), creates `<data_repo>/sundial/config.yaml` from a template, and syncs these skills to `<data_repo>/.agents/skills/sundial/`. It is idempotent.
-
-`sundial health` reports the resolved `data_repo` and `config` paths so you can confirm which data repo the running daemon is using.
-
-### Data repo layout
-
-```
-<data_repo>/
-  .agents/
-    workspace.yaml        # shared across tools; sundial registers under tools.sundial
-    skills/sundial/       # this skill file, synced by `sundial setup`
-  sundial/
-    config.yaml           # daemon options (optional; defaults apply)
-    schedules/            # schedule definitions, one JSON per schedule
+# Claude Code — session_id captured from this session's JSON envelope
+sundial add at --at "2026-04-24T10:00:00" \
+  --command 'claude --resume abc123 --dangerously-skip-permissions -p "continue where we left off" --output-format json' \
+  --name "resume-session"
 ```
 
-Runtime state (`~/.config/sundial/state/`) and run logs (`~/.config/sundial/logs/`) stay local to the machine — they are not part of the data repo.
+### Recurring: every weekday at 7am, as a fresh session
+
+```bash
+# Codex
+sundial add cron --cron "0 7 * * 1-5" \
+  --command 'codex exec --yolo "triage my inbox"' \
+  --name "daily-triage"
+
+# Claude Code
+sundial add cron --cron "0 7 * * 1-5" \
+  --command 'claude --dangerously-skip-permissions -p "triage my inbox" --output-format json' \
+  --name "daily-triage"
+```
+
+### Wait for an external condition, then resume a specific session to act on it
+
+```bash
+# Codex
+sundial add poll \
+  --trigger 'outreach reply-check --contact-id c_abc --since "$SUNDIAL_LAST_FIRED_AT"' \
+  --interval 2m --timeout 72h --once --detach \
+  --command 'codex exec resume abc123 --yolo "a reply arrived — continue the campaign"' \
+  --name "await-reply-c_abc"
+
+# Claude Code
+sundial add poll \
+  --trigger 'outreach reply-check --contact-id c_abc --since "$SUNDIAL_LAST_FIRED_AT"' \
+  --interval 2m --timeout 72h --once --detach \
+  --command 'claude --resume abc123 --dangerously-skip-permissions -p "a reply arrived — continue the campaign" --output-format json' \
+  --name "await-reply-c_abc"
+```
+
+A few things to think about before you write the `--command`:
+
+- **Pick fresh vs. resume.** New session = new context, cheap but you must pass everything the future self needs via the prompt. Resume = inherits your current context, useful when the future call is a continuation of *this* conversation.
+- **Always quote the nested prompt.** The command runs under a login shell (`/bin/zsh -l -c`). Use single quotes on the outer string and escape inner quotes as needed.
+- **Write outputs somewhere readable.** The future session has no conversational channel to reach the user. Log to a file, the data repo, or whatever external sink the user already watches.
+- **The daemon doesn't know "agent exited cleanly" from "agent fell over".** It only sees the shell exit code. If you care about outcome visibility, have the prompt instruct the agent to write a status file.
 
 ## Commands
 
@@ -133,7 +179,7 @@ Optional flags:
 
 Past timestamps are rejected at creation. There is no `--once` flag — `at` is implicitly one-shot. If the daemon is offline past the 60s grace window, the schedule completes with reason `missed`.
 
-### Shared Flags (all subcommands)
+### Shared flags (all subcommands)
 
 - `--command` — shell command to execute (required)
 - `--name` — human-readable label
@@ -145,7 +191,7 @@ Past timestamps are rejected at creation. There is no `--once` flag — `at` is 
 
 Duplicate detection catches both exact matches (same name or same command) and fuzzy matches (similar name via Levenshtein distance, or one command is a substring of another). Use `--force` to override.
 
-### Refreshing Schedules
+### Refreshing schedules
 
 Use `--refresh` to atomically update an active schedule without removing it first. This is useful for resetting poll timeouts or changing trigger parameters while preserving the schedule ID.
 
@@ -174,16 +220,32 @@ Always `--dry-run` first when building a schedule from natural language.
 3. Create — `sundial add ... --json`
 4. Confirm — `sundial show <id> --json`
 
-## Git Sync
+## Data repo layout
+
+Schedules are stored inside the shared data repo (the same git repo used by any other agent tooling):
+
+```
+<data_repo>/
+  .agents/
+    workspace.yaml        # shared across tools; sundial registers under tools.sundial
+    skills/sundial/       # this skill tree (SKILL.md + child docs)
+  sundial/
+    config.yaml           # daemon options (optional; defaults apply)
+    schedules/            # one JSON per schedule
+```
+
+Runtime state (`~/.config/sundial/state/`) and run logs (`~/.config/sundial/logs/`) stay local to the machine — they are not part of the data repo.
+
+## Git sync
 
 After every `add` or `remove`, the daemon automatically commits the change to the data repo and pushes to the remote. You do not need to run any git commands.
 
-- Each schedule is a JSON file at `sundial/schedules/sch_<id>.json` in this repo.
+- Each schedule is a JSON file at `sundial/schedules/sch_<id>.json` in the data repo.
 - Removal sets `status: "removed"` in the file rather than deleting it. `--once` schedules get `status: "completed"` after firing. Paused schedules get `status: "paused"`.
 - Push is best-effort; `sundial health --json` reports `pending_pushes` if any failed.
 - `sundial reload` retries pending pushes.
 
-## Diagnosing Failures
+## Diagnosing failures
 
 If a scheduled command produces unexpected results, check the run logs:
 
@@ -192,17 +254,17 @@ If a scheduled command produces unexpected results, check the run logs:
 
 Read the run log first to see what the command actually produced, then the daemon log if the schedule itself misbehaved (didn't fire, git sync failed, etc.).
 
-## Raw Data
+## Raw data
 
-Schedule definition files live in `sundial/schedules/` within this repo. Each is a JSON file you can read directly for schedule details, the stored user request, or the recreation command.
+Schedule definition files live in `sundial/schedules/` within the data repo. Each is a JSON file you can read directly for schedule details, the stored user request, or the recreation command.
 
-## Feedback and Improvement
+## Feedback and improvement
 
 You are the primary user of this tool — your observations drive its improvement. When you encounter rough edges while working, surface them.
 
 **What to report**: bugs, friction (too many steps, missing defaults), missing features, unclear behavior or error messages.
 
-**How to report**: append to `sundial/cli-feedback.jsonl` in this repo (one JSON object per line, append-only):
+**How to report**: append to `sundial/cli-feedback.jsonl` in the data repo (one JSON object per line, append-only):
 
 ```json
 {"ts":"2026-04-14T15:30:00Z","category":"friction","command":"sundial add","description":"No way to specify offset in minutes only — had to convert to hours","suggestion":"Accept bare minute values like --offset 30m"}

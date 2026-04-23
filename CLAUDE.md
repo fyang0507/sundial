@@ -42,11 +42,12 @@ Daemon managed by macOS launchd. CLI ↔ daemon IPC over Unix domain socket (JSO
 ```
 main.go              → cmd.Execute()
 cmd/                 → cobra commands (thin wiring layer)
+skills/              → top-level embedded SKILL.md tree (sundial/SKILL.md, scheduling.md, integrating.md). embed.go exposes skills.FS.
 internal/
   model/             → all shared types, interfaces, errors (zero deps — everything imports this)
   trigger/           → CronTrigger + SolarTrigger + PollTrigger + AtTrigger implementing model.Trigger
   config/            → data-repo resolution (env / dev yaml / workspace walk-up), config loading, workspace.yaml stamping
-  scaffold/          → embedded skills + config template used by `sundial setup`
+  scaffold/          → config template + CopySkills orchestration used by `sundial setup` (reads skills.FS)
   version/           → single source of truth for the sundial version
   store/             → file I/O: desired state (data repo), runtime state, run logs (local)
   gitops/            → git precondition checks, commit --only, push
@@ -56,6 +57,7 @@ internal/
   similarity/        → fuzzy string matching (Levenshtein, substring) for duplicate detection
   launchd/           → plist generation, launchd install/uninstall
   format/            → output formatting (plain text + JSON)
+  integration/       → black-box integration tests that spin up a real daemon
 ```
 
 ### Key Design Decisions
@@ -69,6 +71,15 @@ internal/
 - **Execution modes**: default waits for the command to exit (captures `exit_code` + `duration_s`); `--detach` spawns via `Start()` in a new session and returns immediately (per-schedule mutex released in milliseconds, no exit code captured). Use `--detach` for callbacks that re-enter sundial (nested `add --refresh`) or for long-running commands that log outcomes elsewhere.
 - **Agent-first CLI**: non-interactive, --json flag, fail-fast with examples, --dry-run.
 
-## Design Doc
+## Extending
 
-Full engineering design: `docs/engineering-design.md`
+- **New trigger type**: add a type implementing `model.Trigger` under `internal/trigger/`, add its `add` subcommand in `cmd/add_*.go`, wire it into reconciliation in `internal/daemon/`. Triggers stay pure (they compute next-fire times); side effects belong in the daemon.
+- **New RPC**: extend the protocol in `internal/ipc/`, add a handler in `internal/daemon/`, add a thin CLI command in `cmd/`. The daemon remains the single writer — CLI never touches schedule files directly.
+- **Skill/scaffold changes**: edit the embedded tree under `skills/sundial/` at the repo root (SKILL.md is the catalog; `scheduling.md` and `integrating.md` are child docs). The `skills` package exposes `skills.FS` via `go:embed`, and `internal/scaffold` walks it in `CopySkills`. `sundial setup` re-syncs the whole tree idempotently, so adding a new child doc is just adding the file — no code change needed.
+
+## Doc Map
+
+Two audiences. Do not mix them:
+
+1. **Contributors improving sundial itself** — you. Start here (`CLAUDE.md`), then `docs/engineering-design.md` for the full design, `docs/post-v1.md` for the roadmap, `README.md` for the public-facing overview.
+2. **Consumers of sundial** (agents scheduling events, engineers building tools on top) — the skill tree at `skills/sundial/`. `SKILL.md` is a catalog that signposts to `scheduling.md` (agent users) and `integrating.md` (agent-adjacent tool builders). Changes to what consumers see happen there, not in CLAUDE.md or README.md.
