@@ -1,6 +1,6 @@
 # Scheduling with Sundial
 
-For agents (and humans) who want sundial to run a command at some future point. If you're building a tool that uses sundial as infrastructure, read [integrating.md](integrating.md) instead. For setup and data-repo resolution, see [SKILL.md](SKILL.md).
+For agents (and humans) who want sundial to run a command at some future point. If you're building a tool that uses sundial as infrastructure, read [integrating.md](integrating.md) instead. For one-time setup (daemon, data repo), see [setup.md](setup.md).
 
 The schedule you most likely care about is **yourself**: use sundial to invoke a future coding-agent session — fresh or resumed — at an absolute time, on a recurring cadence, or when an external condition becomes true.
 

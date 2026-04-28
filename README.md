@@ -75,6 +75,7 @@ Two audiences, two doc trees.
 **If you use or integrate with sundial** — an agent scheduling events, or an engineer building a tool on top of sundial as infrastructure — the skill tree is your entry point. `sundial setup` syncs it into every data repo so agents can discover it next to the tools they already know.
 
 - [`skills/sundial/SKILL.md`](skills/sundial/SKILL.md) — catalog. Picks your path.
+- [`skills/sundial/setup.md`](skills/sundial/setup.md) — one-time initialization (daemon, data repo). Shared by both audiences below.
 - [`skills/sundial/scheduling.md`](skills/sundial/scheduling.md) — for agents creating schedules. Trigger types, commands, "invoke your future self" with `codex exec resume` / `claude --resume`, diagnostics.
 - [`skills/sundial/integrating.md`](skills/sundial/integrating.md) — for engineers building tools on top of sundial: the data-repo contract, poll env vars, the `--detach` + `--refresh` callback pattern, how to ship your own skill alongside sundial's.
 

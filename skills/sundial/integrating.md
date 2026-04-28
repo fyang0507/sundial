@@ -1,6 +1,6 @@
 # Integrating with Sundial
 
-For engineers building a tool or agent runner that uses sundial as its scheduling primitive — e.g. `outreach-cli` shelling out to `sundial add poll`, or an agent wrapper that arms its own resume via `sundial add at`. If you just want to create schedules at runtime, read [scheduling.md](scheduling.md) instead. For setup, see [SKILL.md](SKILL.md).
+For engineers building a tool or agent runner that uses sundial as its scheduling primitive — e.g. `outreach-cli` shelling out to `sundial add poll`, or an agent wrapper that arms its own resume via `sundial add at`. If you just want to create schedules at runtime, read [scheduling.md](scheduling.md) instead. For one-time setup (daemon, data repo), see [setup.md](setup.md).
 
 ## Mental model
 
