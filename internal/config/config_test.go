@@ -33,7 +33,6 @@ func TestLoad_AllFieldsSet(t *testing.T) {
 	tmp := t.TempDir()
 
 	yaml := `daemon:
-  socket_path: /tmp/test.sock
   log_level: debug
   log_file: /tmp/test.log
 state:
@@ -47,8 +46,11 @@ state:
 		t.Fatalf("Load() error: %v", err)
 	}
 
-	if cfg.Daemon.SocketPath != "/tmp/test.sock" {
-		t.Errorf("SocketPath = %q, want /tmp/test.sock", cfg.Daemon.SocketPath)
+	// socket_path is not a user-configurable field; the expanded default always applies.
+	home, _ := os.UserHomeDir()
+	wantSocket := filepath.Join(home, "Library/Application Support/sundial/sundial.sock")
+	if cfg.Daemon.SocketPath != wantSocket {
+		t.Errorf("SocketPath = %q, want default %q", cfg.Daemon.SocketPath, wantSocket)
 	}
 	if cfg.Daemon.LogLevel != "debug" {
 		t.Errorf("LogLevel = %q, want debug", cfg.Daemon.LogLevel)

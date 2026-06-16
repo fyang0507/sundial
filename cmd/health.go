@@ -23,15 +23,10 @@ func init() {
 }
 
 func runHealth(cmd *cobra.Command, args []string) {
-	// Determine socket path: use resolved config if available, otherwise the default.
-	socketPath := config.ExpandPath(model.DefaultSocketPath)
-	if cfg, _, err := config.LoadAndResolve(); err == nil {
-		socketPath = cfg.Daemon.SocketPath
-	}
-
-	// Ask the daemon — it is the source of truth for all health checks.
+	// Ask the daemon over the well-known socket — it is the source of truth
+	// for all health checks (including which data repo it is attached to).
 	var daemonResult model.HealthResult
-	client := ipc.NewClient(socketPath)
+	client := ipc.NewClient(config.ExpandPath(model.DefaultSocketPath))
 	if err := client.Call(model.MethodHealth, nil, &daemonResult); err == nil {
 		fmt.Println(format.FormatHealthResult(&daemonResult, jsonOutput))
 		return

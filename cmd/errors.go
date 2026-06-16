@@ -68,24 +68,3 @@ func tryFormatRPCError(rpcErr *model.RPCError) string {
 	}
 	return ""
 }
-
-// handleClientError handles errors from getClient() (config loading failures).
-func handleClientError(err error) {
-	if errors.Is(err, model.ErrDataRepoNotResolved) {
-		if jsonOutput {
-			m := map[string]string{
-				"error": "data repo not resolved",
-				"hint":  `run 'sundial setup --data-repo <path>' to scaffold a data repo, or set SUNDIAL_DATA_REPO, or invoke from a directory under one with .agents/workspace.yaml`,
-			}
-			data, _ := json.Marshal(m)
-			fmt.Println(string(data))
-		} else {
-			fmt.Println("Error: data repo not resolved")
-			fmt.Println("  hint: run 'sundial setup --data-repo <path>' to scaffold a data repo, or set SUNDIAL_DATA_REPO, or invoke from a directory under one with .agents/workspace.yaml")
-		}
-		os.Exit(1)
-	}
-
-	fmt.Println(format.FormatError(err.Error(), jsonOutput))
-	os.Exit(1)
-}

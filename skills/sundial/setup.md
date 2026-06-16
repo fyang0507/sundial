@@ -1,6 +1,6 @@
 # Setup
 
-One-time initialization for sundial. Both [scheduling.md](scheduling.md) and [integrating.md](integrating.md) assume the steps here are done. Re-run any step idempotently — nothing here is destructive.
+One-time initialization for sundial. [scheduling.md](scheduling.md) assumes the steps here are done. Re-run any step idempotently — nothing here is destructive.
 
 ## Verify the daemon is running
 

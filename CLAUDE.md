@@ -42,7 +42,7 @@ Daemon managed by macOS launchd. CLI ↔ daemon IPC over Unix domain socket (JSO
 ```
 main.go              → cmd.Execute()
 cmd/                 → cobra commands (thin wiring layer)
-skills/              → top-level embedded SKILL.md tree (sundial/SKILL.md, setup.md, scheduling.md, integrating.md). embed.go exposes skills.FS.
+skills/              → top-level embedded SKILL.md tree (sundial/SKILL.md, setup.md, agent-workflows.md, scheduling.md). embed.go exposes skills.FS.
 internal/
   model/             → all shared types, interfaces, errors (zero deps — everything imports this)
   trigger/           → CronTrigger + SolarTrigger + PollTrigger + AtTrigger implementing model.Trigger
@@ -75,11 +75,11 @@ internal/
 
 - **New trigger type**: add a type implementing `model.Trigger` under `internal/trigger/`, add its `add` subcommand in `cmd/add_*.go`, wire it into reconciliation in `internal/daemon/`. Triggers stay pure (they compute next-fire times); side effects belong in the daemon.
 - **New RPC**: extend the protocol in `internal/ipc/`, add a handler in `internal/daemon/`, add a thin CLI command in `cmd/`. The daemon remains the single writer — CLI never touches schedule files directly.
-- **Skill/scaffold changes**: edit the embedded tree under `skills/sundial/` at the repo root. `SKILL.md` is the catalog; `setup.md` covers one-time initialization (daemon health, data-repo resolution) shared by both audiences; `scheduling.md` and `integrating.md` are the role-specific child docs. The `skills` package exposes `skills.FS` via `go:embed`, and `internal/scaffold` walks it in `CopySkills`. `sundial setup` re-syncs the whole tree idempotently, so adding a new child doc is just adding the file — no code change needed.
+- **Skill/scaffold changes**: edit the embedded tree under `skills/sundial/` at the repo root. `SKILL.md` is the catalog (trigger-type overviews + the command-agnostic mental model + signposts); `setup.md` covers one-time initialization (daemon health, data-repo resolution); `agent-workflows.md` covers scheduling a headless agent session (full local access, fresh vs. resumed, session-id capture); `scheduling.md` enriches `sundial <command> --help` with what the flag reference can't convey (poll trigger contract, the `--detach` + `--refresh` callback pattern, duplicate detection, inspecting state, data-repo contract, git sync, diagnostics). The `skills` package exposes `skills.FS` via `go:embed`, and `internal/scaffold` walks it in `CopySkills`. `sundial setup` re-syncs the whole tree idempotently, so adding a new child doc is just adding the file — no code change needed.
 
 ## Doc Map
 
 Two audiences. Do not mix them:
 
 1. **Contributors improving sundial itself** — you. Start here (`CLAUDE.md`), then `docs/engineering-design.md` for the full design, `docs/post-v1.md` for the roadmap, `README.md` for the public-facing overview.
-2. **Consumers of sundial** (agents scheduling events, engineers building tools on top) — the skill tree at `skills/sundial/`. `SKILL.md` is a catalog that signposts to `scheduling.md` (agent users) and `integrating.md` (agent-adjacent tool builders), with `setup.md` as the shared one-time-init prerequisite both child docs reference. Changes to what consumers see happen there, not in CLAUDE.md or README.md.
+2. **Consumers of sundial** (agents scheduling events, engineers building tools on top) — the skill tree at `skills/sundial/`. `SKILL.md` is a catalog (trigger-type overviews + the command-agnostic mental model) that signposts to `agent-workflows.md` (scheduling a headless agent session) and `scheduling.md` (the full scheduler syntax and operational reference, including integrator notes), with `setup.md` as the one-time-init prerequisite. Changes to what consumers see happen there, not in CLAUDE.md or README.md.

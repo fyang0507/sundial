@@ -19,10 +19,7 @@ func init() {
 }
 
 func runReload(cmd *cobra.Command, args []string) {
-	client, err := getClient()
-	if err != nil {
-		handleClientError(err)
-	}
+	client := getClient()
 
 	var result model.ReloadResult
 	if err := client.Call(model.MethodReload, nil, &result); err != nil {

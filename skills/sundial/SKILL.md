@@ -1,28 +1,39 @@
 ---
 name: sundial
-description: Agent-native scheduler. Entry point — directs you to the right child doc depending on whether you are scheduling events or building a tool that uses sundial as infrastructure.
+description: Agent-native scheduler. Entry point — trigger-type overviews plus signposts to one-time setup, scheduling your own future agent session, and the full scheduler reference.
 ---
 
 # Sundial
 
 A macOS daemon that fires shell commands on four triggers (cron, solar, poll, at). You talk to it through the `sundial` CLI — every command accepts `--json` and none of them prompt.
 
+## Command-agnostic mental model
+
+Sundial is deliberately **command-agnostic**: it does not know or care whether a command is a coding agent, a mailer, or `echo hi`. It just spawns `/bin/zsh -l -c "<your command>"` and records the exit code. That minimalism is the whole integration surface — anything you can write as a shell command can become a scheduled task, and anything you can read from exit codes and the data repo is observable.
+
 This file is a catalog. Pick your path.
 
 ## First time?
 
-If `sundial` isn't on your PATH, the daemon isn't running, or you don't yet have a data repo, start at **[setup.md](setup.md)** — one-time initialization, shared by both paths below.
+If `sundial` isn't on your PATH, the daemon isn't running, or you don't yet have a data repo, start at **[setup.md](setup.md)** — one-time initialization.
 
-## Pick your path
+## Trigger types
 
-### I want to schedule things with sundial
+Four triggers cover the scheduling repertoire. See [scheduling.md](scheduling.md) for the exact syntax and flags of each.
 
-You're an agent (or a person) who needs a command to run on a cron, near sunset, when some external condition becomes true, or at a specific future time — including invoking a fresh or resumed session of yourself.
+- **cron** — static recurring schedule on a standard 5-field cron expression. Use for "every weekday at 9am".
+- **solar** — fires relative to local sunrise/sunset, with an optional offset, on chosen weekdays. Use for "30 minutes before sunset on Mon/Wed/Fri".
+- **poll** — condition-gated periodic check: runs a trigger command on an interval and fires the main command only when the trigger exits `0`. Use for "when a reply arrives — could be 2 minutes, could be 3 days".
+- **at** — one-off fire at an absolute timestamp; auto-completes after firing. Use for "wake me up at 10am tomorrow".
 
-→ **[scheduling.md](scheduling.md)** — trigger types, commands, flags, workflow, the "invoke your future self" pattern, diagnostics, how to give feedback.
+## Scheduling your future self
 
-### I'm building a tool on top of sundial
+If you're an agent (or building a tool that wraps one) and want to invoke a fresh or resumed agent session — at an absolute time, on a recurring cadence, or when an external condition becomes true:
 
-You're writing a CLI or service that uses sundial as its scheduling primitive — e.g. an outreach tool that shells out to `sundial add poll`, or an agent runner that arms its own resume via `sundial add at`.
+→ **[agent-workflows.md](agent-workflows.md)** — running agents with full local access, headless invocations for Codex and Claude Code, fresh vs. resumed sessions, obtaining and persisting session ids, and the checklist before you write the `--command`.
 
-→ **[integrating.md](integrating.md)** — the shared-data-repo contract, the poll env-var contract, the `--detach` + `--refresh` callback pattern, how to ship your own skill alongside sundial's.
+## Scheduler reference
+
+`sundial <command> --help` is the canonical flag-and-syntax reference for each trigger. For the behavior and contracts `--help` can't convey — the poll trigger contract, the `--detach` + `--refresh` callback pattern, duplicate detection, inspecting state, the data-repo model, git sync, diagnostics, and how to give feedback:
+
+→ **[scheduling.md](scheduling.md)** — enriches `--help` with contracts and operational detail.

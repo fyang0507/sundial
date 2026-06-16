@@ -1,93 +1,8 @@
 # Scheduling with Sundial
 
-For agents (and humans) who want sundial to run a command at some future point. If you're building a tool that uses sundial as infrastructure, read [integrating.md](integrating.md) instead. For one-time setup (daemon, data repo), see [setup.md](setup.md).
+This enriches `sundial <command> --help` — it does not repeat it. Every flag, the accepted formats, and a worked example for each trigger already live in `sundial add cron|solar|poll|at --help`. What follows is the behavior and contracts the flag reference can't convey: the poll trigger contract, the `--detach` + `--refresh` callback pattern, duplicate detection, state inspection, the data-repo model, git sync, and diagnostics. For driving agent sessions specifically, see [agent-workflows.md](agent-workflows.md); for one-time setup, see [setup.md](setup.md).
 
-The schedule you most likely care about is **yourself**: use sundial to invoke a future coding-agent session — fresh or resumed — at an absolute time, on a recurring cadence, or when an external condition becomes true.
-
-## Invoke your future self
-
-Sundial does not know or care what a command is; it just runs a shell string. That means any headless agent CLI works, including session resume — and because sundial is agent-agnostic, the same sundial invocation works equally well whether you drive Codex or Claude Code. Pick whichever your workflow uses.
-
-**Codex** (NDJSON; session id arrives on the first `thread.started` line):
-```bash
-codex exec --yolo --json "<prompt>"                      # new session
-codex exec resume <thread_id> --yolo --json "<prompt>"   # resume
-```
-
-**Claude Code** (single JSON; `session_id` field):
-```bash
-claude --dangerously-skip-permissions -p "<prompt>" --output-format json               # new
-claude --resume <session_id> --dangerously-skip-permissions -p "<prompt>" --output-format json   # resume
-```
-
-### Wake up as a fresh session tomorrow at 10am
-
-```bash
-# Codex
-sundial add at --at "2026-04-24T10:00:00" \
-  --command 'codex exec --yolo "join the 10am standup, summarize the doc in ~/work/notes.md"' \
-  --name "standup-wakeup" \
-  --user-request "join standup tomorrow at 10am"
-
-# Claude Code
-sundial add at --at "2026-04-24T10:00:00" \
-  --command 'claude --dangerously-skip-permissions -p "join the 10am standup, summarize the doc in ~/work/notes.md" --output-format json' \
-  --name "standup-wakeup" \
-  --user-request "join standup tomorrow at 10am"
-```
-
-### Continue THIS conversation later (resume the current session)
-
-```bash
-# Codex — thread id captured from this session's `thread.started` NDJSON line
-sundial add at --at "2026-04-24T10:00:00" \
-  --command 'codex exec resume abc123 --yolo "continue where we left off"' \
-  --name "resume-session"
-
-# Claude Code — session_id captured from this session's JSON envelope
-sundial add at --at "2026-04-24T10:00:00" \
-  --command 'claude --resume abc123 --dangerously-skip-permissions -p "continue where we left off" --output-format json' \
-  --name "resume-session"
-```
-
-### Recurring: every weekday at 7am, as a fresh session
-
-```bash
-# Codex
-sundial add cron --cron "0 7 * * 1-5" \
-  --command 'codex exec --yolo "triage my inbox"' \
-  --name "daily-triage"
-
-# Claude Code
-sundial add cron --cron "0 7 * * 1-5" \
-  --command 'claude --dangerously-skip-permissions -p "triage my inbox" --output-format json' \
-  --name "daily-triage"
-```
-
-### Wait for an external condition, then resume a specific session to act on it
-
-```bash
-# Codex
-sundial add poll \
-  --trigger 'outreach reply-check --contact-id c_abc --since "$SUNDIAL_LAST_FIRED_AT"' \
-  --interval 2m --timeout 72h --once --detach \
-  --command 'codex exec resume abc123 --yolo "a reply arrived — continue the campaign"' \
-  --name "await-reply-c_abc"
-
-# Claude Code
-sundial add poll \
-  --trigger 'outreach reply-check --contact-id c_abc --since "$SUNDIAL_LAST_FIRED_AT"' \
-  --interval 2m --timeout 72h --once --detach \
-  --command 'claude --resume abc123 --dangerously-skip-permissions -p "a reply arrived — continue the campaign" --output-format json' \
-  --name "await-reply-c_abc"
-```
-
-A few things to think about before you write the `--command`:
-
-- **Pick fresh vs. resume.** New session = new context, cheap but you must pass everything the future self needs via the prompt. Resume = inherits your current context, useful when the future call is a continuation of *this* conversation.
-- **Always quote the nested prompt.** The command runs under a login shell (`/bin/zsh -l -c`). Use single quotes on the outer string and escape inner quotes as needed.
-- **Write outputs somewhere readable.** The future session has no conversational channel to reach the user. Log to a file, the data repo, or whatever external sink the user already watches.
-- **The daemon doesn't know "agent exited cleanly" from "agent fell over".** It only sees the shell exit code. If you care about outcome visibility, have the prompt instruct the agent to write a status file.
+You always talk to the daemon through the CLI — there is no Go library and no stable IPC surface for third parties (the Unix-socket JSON-RPC is an internal detail and may change). Every command accepts `--json` and is non-interactive: exit code `0` = success, `1` = error; errors go to stderr.
 
 ## Commands
 
@@ -96,133 +11,80 @@ A few things to think about before you write the `--command`:
 | Create schedule | `sundial add cron\|solar\|poll\|at ...` |
 | List schedules | `sundial list` |
 | Show details | `sundial show <id>` |
-| Remove schedule | `sundial remove <id>` |
-| Remove all | `sundial remove --all --yes` |
-| Pause schedule | `sundial pause <id>` |
-| Resume schedule | `sundial unpause <id>` |
+| Remove schedule | `sundial remove <id>` (or `--all --yes`) |
+| Pause / resume | `sundial pause <id>` / `sundial unpause <id>` |
 | Health check | `sundial health` |
 | Reload config | `sundial reload` |
 | Scaffold data repo | `sundial setup [--data-repo <path>]` |
 | Look up coordinates | `sundial geocode "<address>"` |
 
-## Creating Schedules
+Run `sundial <command> --help` for the flags and an example. `sundial health --json` returns the resolved `data_repo`, `config` path, daemon pid, and `pending_pushes`; if the daemon isn't reachable, launchd hasn't started it — run `make start` from the sundial repo (see [setup.md](setup.md)).
 
-### Cron
+## Trigger behavior beyond `--help`
 
-```bash
-sundial add cron \
-  --cron "0 9 * * 1-5" \
-  --command "cd ~/project && your-command-here" \
-  --name "weekday 9am task"
-```
+**Solar** — resolve a street address into the `--lat`, `--lon`, and `--timezone` values you pass with `sundial geocode "<address>" --json`.
 
-Required flags: `--cron`.
+**At** — if the daemon is offline past the 60s grace window when an `at` schedule was due, the schedule completes with reason `missed` rather than firing late.
 
-### Solar
+**Poll — the trigger contract.** Poll is the extension point most integrations use: it runs `--trigger` on the interval and fires `--command` only when the trigger exits `0`. When you write a trigger command:
 
-```bash
-sundial add solar \
-  --event sunset --offset "-1h" \
-  --days mon,wed,fri \
-  --lat 37.7749 --lon -122.4194 --timezone "America/Los_Angeles" \
-  --command "cd ~/project && your-command-here" \
-  --name "before-sunset task"
-```
+1. Exit `0` when the condition holds, non-zero otherwise, and return **quickly** — poll checks block the scheduler tick, so keep them fast.
+2. Sundial sets `SUNDIAL_SCHEDULE_ID` and `SUNDIAL_LAST_FIRED_AT` (ISO 8601) in the trigger's environment on every invocation, so the check can scope itself without sundial knowing your domain. Sundial only ever observes the exit code.
+3. Minimum interval is 30s; timeouts are wall-clock (e.g. `72h`).
 
-Required flags: `--event` (sunrise|sunset), `--days`, `--lat`, `--lon`.
+Without `--once` a poll runs until its timeout; with it the schedule completes after the first successful fire. A completed schedule auto-reactivates if `sundial add` is called again with the same command. For a worked example that waits for a condition and then resumes a specific agent session, see [agent-workflows.md](agent-workflows.md).
 
-Optional flags:
-- `--offset` — human (`-1h`, `+30m`) or ISO 8601 (`-PT1H`, `PT30M`).
-- `--timezone` — IANA timezone (e.g. `America/Los_Angeles`); defaults to the machine's local timezone.
-- `--once` — fire once then complete.
+## Duplicate detection
 
-Use `sundial geocode "<address>" --json` to resolve an address into `lat`, `lon`, and `timezone`.
+`sundial add` rejects a schedule that collides with an existing one — exact (same name or same command) or fuzzy (similar name via Levenshtein distance, or one command is a substring of another). Use `--force` to bypass both checks, or `--refresh` to update the existing schedule in place.
 
-### Poll
+## Refreshing schedules
 
-Condition-gated periodic check. Runs a trigger command at a fixed interval; the main command fires only when the trigger exits 0.
+`--refresh` atomically updates an active schedule in place instead of removing and re-adding it — useful for resetting a poll timeout or changing trigger parameters while preserving the schedule ID.
 
-```bash
-sundial add poll \
-  --trigger 'your-check-command --since "$SUNDIAL_LAST_FIRED_AT"' \
-  --interval 2m --timeout 72h --once \
-  --command "cd ~/project && your-command-here" \
-  --name "wait for condition"
-```
-
-Required flags: `--trigger` (condition command), `--interval` (check frequency, min 30s), `--timeout` (max lifetime, e.g. `72h`).
-
-Optional flags:
-- `--once` — fire once then complete the schedule. Without it, the poll runs indefinitely. Completed schedules auto-reactivate if `sundial add` is called again with the same command.
-
-The trigger command receives `SUNDIAL_SCHEDULE_ID` and `SUNDIAL_LAST_FIRED_AT` env vars.
-
-### At
-
-One-off fire at an absolute timestamp. Fires exactly once, then auto-completes. Use for "wake me up at 10am tomorrow" or for agents scheduling a future session at a known time (e.g. rejoin a meeting).
-
-```bash
-sundial add at \
-  --at "2026-04-20T10:00:00" \
-  --command "codex exec 'join the standup'" \
-  --name "standup reminder"
-```
-
-Required flags: `--at` (ISO timestamp).
-
-`--at` formats:
-- Naive local time — `2026-04-20T10:00:00` — interpreted in `--timezone` (defaults to machine's local zone).
-- Zoned RFC3339 — `2026-04-20T10:00:00-07:00` or `2026-04-20T17:00:00Z` — `--timezone` is ignored.
-
-Optional flags:
-- `--timezone` — IANA timezone for naive timestamps. Ignored when `--at` includes an explicit offset.
-
-Past timestamps are rejected at creation. There is no `--once` flag — `at` is implicitly one-shot. If the daemon is offline past the 60s grace window, the schedule completes with reason `missed`.
-
-### Shared flags (all subcommands)
-
-- `--command` — shell command to execute (required)
-- `--name` — human-readable label
-- `--user-request` — store the original user request (always pass this)
-- `--dry-run` — validate and preview without creating
-- `--force` — skip duplicate detection (exact and fuzzy)
-- `--refresh` — update an existing schedule in place if name matches (requires `--name`; mutually exclusive with `--force`)
-- `--detach` — fire-and-forget: spawn the command without waiting for exit. No `exit_code` or `duration_s` is captured; `sundial show` renders `last_fire: … (detached)`. Use this when the command is long-running and either logs its own outcome elsewhere or re-enters sundial (e.g. a callback that calls `sundial add --refresh`) — without `--detach` the per-schedule mutex is held for the full command duration and the nested refresh will be rejected as "schedule currently firing"
-
-Duplicate detection catches both exact matches (same name or same command) and fuzzy matches (similar name via Levenshtein distance, or one command is a substring of another). Use `--force` to override.
-
-### Refreshing schedules
-
-Use `--refresh` to atomically update an active schedule without removing it first. This is useful for resetting poll timeouts or changing trigger parameters while preserving the schedule ID.
-
-```bash
-# Original watcher with 72h timeout
-sundial add poll --trigger "check-reply" --interval 2m --timeout 72h --once \
-  --command "notify agent" --name "outreach-watch"
-
-# Later: refresh with a new 72h countdown
-sundial add poll --trigger "check-reply" --interval 2m --timeout 72h --once \
-  --command "notify agent" --name "outreach-watch" --refresh
-```
-
-Behavior:
-- If an active schedule with the same `--name` exists → updates it in place (status: `"refreshed"`, same ID).
-- If no match → creates a new schedule (upsert semantics).
+- Matches on `--name`, so `--refresh` requires `--name` (and is mutually exclusive with `--force`).
+- If an active schedule with that name exists → updates it (status `"refreshed"`, same ID); otherwise creates one (upsert semantics).
 - Paused schedules are updated but stay paused.
 - `CreatedAt` is reset, so poll timeouts restart from now.
 
-Always `--dry-run` first when building a schedule from natural language.
+## The callback pattern (`--detach` + `--refresh`)
 
-## Workflow
+If a scheduled command itself calls back into sundial — e.g. a poll callback that re-arms the watcher for another 72h — you will deadlock unless you use both:
+
+- `--detach` on the **outer** add releases the per-schedule mutex as soon as the child is spawned. Without it the mutex is held for the full command duration and the nested `sundial add` is rejected with `schedule currently firing`. (`--detach` also means no `exit_code`/`duration_s` is captured; `sundial show` renders `last_fire: … (detached)`.)
+- `--refresh` on the **nested** add updates the existing schedule in place instead of colliding with duplicate detection.
+
+Use `--detach` only when the callback logs its outcome elsewhere or re-enters sundial. For any command whose exit code you want recorded, let it run attached.
+
+## Recommended workflow
 
 1. Geocode if needed — `sundial geocode "<address>" --json`
-2. Dry-run — `sundial add ... --dry-run --json`
+2. Dry-run — `sundial add ... --dry-run --json` (always dry-run first when building a schedule from natural language)
 3. Create — `sundial add ... --json`
 4. Confirm — `sundial show <id> --json`
 
-## Data repo layout
+Always pass `--user-request` with the original request that motivated the schedule.
 
-Schedules are stored inside the shared data repo (the same git repo used by any other agent tooling):
+## Inspecting state
+
+**`sundial list` and `sundial show` are the source of truth.** They are the only views that combine the schedule *definition* with live *runtime* state — `next_fire`, `last_fired_at`, `fire_count`, `last_exit_code`. Always query them (with `--json` for machine parsing) rather than reading files:
+
+```bash
+sundial list --json
+sundial show <id> --json
+```
+
+The git-tracked files under `<data_repo>/sundial/schedules/` hold only the definition (trigger, command, status) — never the runtime fields — so a raw file read can't tell you when something next fires or whether its last run succeeded. Treat those files as **persistence and sync, not a query API**: read them only for git archaeology (what changed, when) or when debugging the daemon. For everything else, ask the CLI.
+
+### Which data repo? (it's not your cwd)
+
+There is exactly one data repo that schedules are written to: **the one the daemon was launched with**, fixed at `make start` time and baked into the launchd plist. The `sundial` CLI is directory-agnostic — `add`/`remove`/`pause` from *any* directory send an RPC to that one daemon, which performs the write into its own repo. The CLI never writes schedule files itself, and your cwd does not redirect where they land. So `cd`-ing into a different project's tree and running `sundial add` still writes to the daemon's repo, not the project you're standing in.
+
+Confirm which repo the running daemon is attached to with `sundial health --json` (it reports the resolved `data_repo`). The one command that *does* write relative to your cwd is `sundial setup`, which scaffolds a repo directly rather than going through the daemon.
+
+### Data repo layout
+
+Sundial, your tool, and any other agent tooling in the same stack share one git repository:
 
 ```
 <data_repo>/
@@ -231,21 +93,28 @@ Schedules are stored inside the shared data repo (the same git repo used by any 
     skills/sundial/       # this skill tree (SKILL.md + child docs)
   sundial/
     config.yaml           # daemon options (optional; defaults apply)
-    schedules/            # one JSON per schedule
+    schedules/            # one JSON per schedule — the definition only
 ```
 
-Runtime state (`~/.config/sundial/state/`) and run logs (`~/.config/sundial/logs/`) stay local to the machine — they are not part of the data repo.
+Runtime state (`~/.config/sundial/state/`) and run logs (`~/.config/sundial/logs/`) stay local to the machine — they are not part of the data repo. This split is deliberate: definitions are git-synced so they survive restarts and travel across machines; volatile runtime state stays local to keep git history clean.
 
-## Git sync
+Conventions to follow when adding your own tool to this shared layout:
+
+- Register yourself under `tools.<your-tool>` in `.agents/workspace.yaml` with at least a `version` field. Mirror what sundial does.
+- Keep operational logs **local** (e.g. `~/.config/<your-tool>/logs/`), not in the data repo. Sundial does this deliberately to keep git history clean; your tool should too.
+- Ship a `SKILL.md` (and any child docs) under `.agents/skills/<your-tool>/`. Agents will discover it next to `sundial/SKILL.md`.
+- Provide a `<your-tool> setup` command that writes your subtree idempotently, the way `sundial setup` does.
+
+### Git sync
 
 After every `add` or `remove`, the daemon automatically commits the change to the data repo and pushes to the remote. You do not need to run any git commands.
 
 - Each schedule is a JSON file at `sundial/schedules/sch_<id>.json` in the data repo.
 - Removal sets `status: "removed"` in the file rather than deleting it. `--once` schedules get `status: "completed"` after firing. Paused schedules get `status: "paused"`.
 - Push is best-effort; `sundial health --json` reports `pending_pushes` if any failed.
-- `sundial reload` retries pending pushes.
+- `sundial reload` retries pending pushes and re-reads the schedule files from disk.
 
-## Diagnosing failures
+### Diagnosing failures
 
 If a scheduled command produces unexpected results, check the run logs:
 
@@ -253,10 +122,6 @@ If a scheduled command produces unexpected results, check the run logs:
 - **Daemon log**: `~/Library/Logs/sundial/sundial.log` — scheduler-level events, git errors, missed-fire warnings.
 
 Read the run log first to see what the command actually produced, then the daemon log if the schedule itself misbehaved (didn't fire, git sync failed, etc.).
-
-## Raw data
-
-Schedule definition files live in `sundial/schedules/` within the data repo. Each is a JSON file you can read directly for schedule details, the stored user request, or the recreation command.
 
 ## Feedback and improvement
 
@@ -267,7 +132,7 @@ You are the primary user of this tool — your observations drive its improvemen
 **How to report**: append to `sundial/cli-feedback.jsonl` in the data repo (one JSON object per line, append-only):
 
 ```json
-{"ts":"2026-04-14T15:30:00Z","category":"friction","command":"sundial add","description":"No way to specify offset in minutes only — had to convert to hours","suggestion":"Accept bare minute values like --offset 30m"}
+{"ts":"2026-06-14T15:30:00Z","category":"friction","command":"sundial add","description":"No way to specify offset in minutes only — had to convert to hours","suggestion":"Accept bare minute values like --offset 30m"}
 ```
 
 Fields: `ts` (ISO 8601), `category` (`bug` | `friction` | `missing_feature` | `unclear_behavior`), `command`, `description`, `suggestion` (optional).

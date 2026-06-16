@@ -11,9 +11,9 @@ var addPollCmd = &cobra.Command{
 	Long:  `Create a schedule that runs a check command on an interval; the main command fires when the check exits 0.`,
 	Example: `  # Check every 2 minutes for up to 72 hours, fire once on success
   sundial add poll \
-    --trigger 'outreach reply-check --contact-id c_abc123 --channel sms' \
+    --trigger 'your-check-command --since "$SUNDIAL_LAST_FIRED_AT"' \
     --interval 2m --timeout 72h --once \
-    --command "codex exec 'Reply from c_abc123. Continue campaign.'"`,
+    --command "codex exec 'condition met — continue the workflow'"`,
 	Run: runAddPoll,
 }
 
