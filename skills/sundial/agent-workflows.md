@@ -29,6 +29,17 @@ claude --resume <session_id> --dangerously-skip-permissions -p "<prompt>" --outp
 
 Drop either command into a `sundial add ... --command '<agent command>'` and you've scheduled your future self.
 
+## Choose the model and reasoning level deliberately
+
+A scheduled agent runs **unattended and often on a recurring cadence**, so its cost compounds silently with every fire — and there's no human watching to notice an overpowered model burning tokens on a trivial chore. Do not default to the most capable model at the highest reasoning level just because that's the interactive default. Instead, pick the **most economic model that can actually do the task**, and set its **reasoning/effort level explicitly** to match — never by omission. Both choices are part of writing the `--command`; reason about them the same way you'd reason about the prompt.
+
+Two levers, set them both:
+
+- **Model** — both CLIs take `--model`. Start from the cheap end and only move up if the task genuinely needs it: for Claude Code, `--model claude-haiku-4-5` (or `haiku`) for routine, well-specified chores; `claude-sonnet-4-6` (`sonnet`) for moderate work; reserve `claude-opus-4-8` (`opus`) for genuinely hard reasoning or long-horizon autonomy. Codex takes `--model` the same way.
+- **Reasoning / effort** — match thinking depth to the task instead of inheriting the default (`high`). Claude Code: `--effort low|medium|high|xhigh|max` — use `low` or `medium` for mechanical or narrowly-scoped chores and raise it only when the work needs deeper reasoning. Codex: `-c model_reasoning_effort="low"` (`minimal`|`low`|`medium`|`high`).
+
+When you resume a session, the model and effort are per-invocation flags on the resuming command, not inherited from the original session — restate them on every scheduled `--command`.
+
 ## Fresh vs. resume
 
 - **Fresh session** — new context, cheap, but you must pass everything the future self needs in the prompt. Good for recurring chores ("triage my inbox") and standalone wake-ups.
