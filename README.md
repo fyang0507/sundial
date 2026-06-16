@@ -4,14 +4,14 @@
 [![Go Version](https://img.shields.io/github/go-mod/go-version/fyang0507/sundial?logo=go&logoColor=white)](go.mod)
 [![Platform](https://img.shields.io/badge/platform-macOS-silver?logo=apple&logoColor=white)](#install)
 [![Agent-native](https://img.shields.io/badge/design-agent--native-8A2BE2)](skills/sundial/SKILL.md)
-[![Works with](https://img.shields.io/badge/works%20with-Codex%20%C2%B7%20Claude%20Code-black)](skills/sundial/scheduling.md)
+[![Works with](https://img.shields.io/badge/works%20with-Codex%20%C2%B7%20Claude%20Code-black)](skills/sundial/agent-workflows.md)
 
 **An agent-native, all-in-one scheduler for macOS.** Cron, solar, poll, and at triggers; a single Go binary; a data repo that travels with your other agent tools.
 
 "Check my inbox every morning at 7am" is the cron a human writes. Sundial is for what comes next:
 
 - *"Every weekday 30 minutes before sunset, check if I have pull my trash bins in from the curb."*
-- *"When a reply arrives on this outreach thread — could be 2 minutes, could be 3 days — resume my session and continue the campaign."*
+- *"When a reply arrives on this thread — could be 2 minutes, could be 3 days — resume my session and continue the campaign."*
 - *"Wake me up at 10am tomorrow, resume the same Claude session I'm in right now, and have it join the standup."*
 
 Sundial schedules shell commands. Because modern coding agents (Codex, Claude Code) ship headless CLIs with `--resume`, those commands can be **future invocations of the agent itself** — fresh sessions *or* resumed ones. An agent using sundial is scheduling its own future self.
@@ -42,10 +42,10 @@ sundial add cron --cron "0 9 * * 1-5" \
 
 # Watch for a reply; fire once when it arrives (up to 72h)
 sundial add poll \
-  --trigger 'outreach reply-check --contact-id c_abc --since "$SUNDIAL_LAST_FIRED_AT"' \
+  --trigger 'your-check-command --since "$SUNDIAL_LAST_FIRED_AT"' \
   --interval 2m --timeout 72h --once --detach \
   --command 'codex exec resume <thread_id> --yolo "reply arrived; continue"' \
-  --name "await-reply-c_abc"
+  --name "await-reply"
 
 sundial list
 ```
@@ -66,7 +66,7 @@ Sundial inverts this:
 - **Poll triggers** delegate the "is there anything to do?" question to a *cheap* shell command (a DB query, an HTTP check). The expensive agent only wakes when the check exits `0`, so event-to-agent latency is one poll interval — not a full tick with full context in between.
 - **Each firing is a fresh or resumed headless session**, scoped to the actual event. You pay for one invocation per event, not one per tick.
 
-Concretely: watching for an inbound SMS reply. A heartbeat loop wakes the agent every N minutes to ask "any replies yet?"; sundial runs a 30-line `outreach reply-check` script every 2 minutes (no LLM calls) and only invokes the agent when it actually has a reply to hand off.
+Concretely: watching for an inbound SMS reply. A heartbeat loop wakes the agent every N minutes to ask "any replies yet?"; sundial runs a 30-line reply-check script every 2 minutes (no LLM calls) and only invokes the agent when it actually has a reply to hand off.
 
 ## Documentation
 
@@ -74,9 +74,10 @@ Two audiences, two doc trees.
 
 **If you use or integrate with sundial** — an agent scheduling events, or an engineer building a tool on top of sundial as infrastructure — the skill tree is your entry point. `sundial setup` syncs it into every data repo so agents can discover it next to the tools they already know.
 
-- [`skills/sundial/SKILL.md`](skills/sundial/SKILL.md) — catalog. Points to setup and the scheduling guide.
+- [`skills/sundial/SKILL.md`](skills/sundial/SKILL.md) — catalog. Trigger-type overviews, the command-agnostic mental model, and signposts to the rest of the tree.
 - [`skills/sundial/setup.md`](skills/sundial/setup.md) — one-time initialization (daemon, data repo).
-- [`skills/sundial/scheduling.md`](skills/sundial/scheduling.md) — the full guide: trigger types, commands, "invoke your future self" with `codex exec resume` / `claude --resume` (run agents with full local access; resume your own session), inspecting state, diagnostics, and a section for engineers building tools on top of sundial (data-repo contract, poll env vars, the `--detach` + `--refresh` callback pattern, shipping your own skill).
+- [`skills/sundial/agent-workflows.md`](skills/sundial/agent-workflows.md) — scheduling a headless agent session: running agents with full local access, fresh vs. resumed sessions with `codex exec resume` / `claude --resume`, and obtaining/persisting session ids.
+- [`skills/sundial/scheduling.md`](skills/sundial/scheduling.md) — enriches `sundial <command> --help` with the behavior it can't convey: the poll trigger contract, the `--detach` + `--refresh` callback pattern, duplicate detection, inspecting state, the data-repo contract, git sync, and diagnostics.
 
 **If you work on sundial itself** — adding triggers, tightening the daemon, shipping a release — the contributor docs live in this repo:
 
@@ -90,4 +91,4 @@ Single Go binary, dual mode. Run as `sundial <subcommand>` and it's a CLI client
 
 ## Status
 
-**v1** — macOS only. Cron, solar, poll, and at triggers. Multi-agent is implicit (any headless shell command works), but skills and examples were originally written with Codex in mind; Claude Code patterns are now documented in [SKILL.md](skills/sundial/SKILL.md). Linux support and first-class session tracking are post-v1 (see [`docs/post-v1.md`](docs/post-v1.md)).
+**v1** — macOS only. Cron, solar, poll, and at triggers. Multi-agent is implicit (any headless shell command works), but skills and examples were originally written with Codex in mind; Claude Code patterns are now documented in [agent-workflows.md](skills/sundial/agent-workflows.md). Linux support and first-class session tracking are post-v1 (see [`docs/post-v1.md`](docs/post-v1.md)).
