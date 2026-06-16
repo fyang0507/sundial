@@ -23,7 +23,6 @@ const ConfigTemplate = `# Daemon options for sundial. The data_repo itself is re
 # All fields below have sensible defaults. Uncomment to override.
 #
 # daemon:
-#   socket_path: "~/Library/Application Support/sundial/sundial.sock"
 #   log_level: info                      # debug | info | warn | error
 #   log_file: "~/Library/Logs/sundial/sundial.log"
 #

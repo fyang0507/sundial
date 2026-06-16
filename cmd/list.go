@@ -20,10 +20,7 @@ func init() {
 }
 
 func runList(cmd *cobra.Command, args []string) {
-	client, err := getClient()
-	if err != nil {
-		handleClientError(err)
-	}
+	client := getClient()
 
 	var result model.ListResult
 	if err := client.Call(model.MethodList, model.ListParams{}, &result); err != nil {

@@ -20,8 +20,15 @@ type Config struct {
 }
 
 // DaemonConfig holds daemon-specific settings.
+//
+// SocketPath is intentionally not part of the on-disk schema (`yaml:"-"`): the
+// CLI always dials the well-known DefaultSocketPath, so the daemon must bind it
+// too — a per-repo override would let the daemon listen somewhere the CLI can
+// never reach. The field is retained only so the daemon (and tests) can be
+// constructed with an explicit path; production gets DefaultSocketPath via
+// applyDefaults.
 type DaemonConfig struct {
-	SocketPath string `yaml:"socket_path"`
+	SocketPath string `yaml:"-"`
 	LogLevel   string `yaml:"log_level"`
 	LogFile    string `yaml:"log_file"`
 }

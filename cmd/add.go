@@ -76,10 +76,7 @@ func dispatchAdd(params model.AddParams, cfg model.TriggerConfig, displayTimezon
 		return
 	}
 
-	client, err := getClient()
-	if err != nil {
-		handleClientError(err)
-	}
+	client := getClient()
 
 	var result model.AddResult
 	if err := client.Call(model.MethodAdd, params, &result); err != nil {

@@ -28,10 +28,7 @@ func runUnpause(cmd *cobra.Command, args []string) {
 
 	params := model.PauseParams{ID: args[0]}
 
-	client, err := getClient()
-	if err != nil {
-		handleClientError(err)
-	}
+	client := getClient()
 
 	var result model.PauseResult
 	if err := client.Call(model.MethodUnpause, params, &result); err != nil {

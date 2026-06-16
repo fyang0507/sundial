@@ -46,10 +46,7 @@ func runRemove(cmd *cobra.Command, args []string) {
 		params.ID = args[0]
 	}
 
-	client, err := getClient()
-	if err != nil {
-		handleClientError(err)
-	}
+	client := getClient()
 
 	var result model.RemoveResult
 	if err := client.Call(model.MethodRemove, params, &result); err != nil {

@@ -25,10 +25,7 @@ func runShow(cmd *cobra.Command, args []string) {
 		ID: args[0],
 	}
 
-	client, err := getClient()
-	if err != nil {
-		handleClientError(err)
-	}
+	client := getClient()
 
 	var result model.ShowResult
 	if err := client.Call(model.MethodShow, params, &result); err != nil {
