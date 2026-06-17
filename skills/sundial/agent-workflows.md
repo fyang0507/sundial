@@ -15,11 +15,29 @@ These flags are intentional and load-bearing here, not a careless shortcut: the 
 
 The headless invocations, with the preferred flags:
 
-**Codex** (NDJSON; session id arrives on the first `thread.started` line):
+**Codex** (default for scheduled runs; log plain output locally):
 ```bash
-codex exec --yolo --json "<prompt>"                      # new session
-codex exec resume <thread_id> --yolo --json "<prompt>"   # resume
+codex exec \
+  --cd /path/to/workspace \
+  --model <chosen-model> \
+  -c model_reasoning_effort="low" \
+  --dangerously-bypass-approvals-and-sandbox \
+  "Run <skill-name> now." >>/path/to/local/run.log 2>&1
+
+codex exec resume <thread_id> \
+  --cd /path/to/workspace \
+  --model <chosen-model> \
+  -c model_reasoning_effort="low" \
+  --dangerously-bypass-approvals-and-sandbox \
+  "continue where we left off" >>/path/to/local/run.log 2>&1
 ```
+
+Do **not** use `codex exec --json` as the default scheduled-run pattern.
+`--json` streams every event to stdout; image/tool payloads can make that stream
+large enough to break unattended runs (`Broken pipe`) before the workflow reaches
+its external notification step. Reserve `--json` for short, controlled
+bootstrap calls where the caller truly needs structured events, such as capturing
+a new thread id.
 
 **Claude Code** (single JSON envelope; `session_id` field):
 ```bash
@@ -40,6 +58,20 @@ Two levers, set them both:
 
 When you resume a session, the model and effort are per-invocation flags on the resuming command, not inherited from the original session — restate them on every scheduled `--command`.
 
+## Keep prompts minimal
+
+When a workflow has a skill or runbook, the scheduled prompt should usually be
+just enough to select it:
+
+```text
+Run <skill-name> now.
+```
+
+Do not copy the whole runbook into the prompt. Repeating the same instructions
+inflates every recurring run, increases cost, and creates drift when the skill
+file changes. Put durable behavior in the skill, then schedule the smallest
+prompt that invokes it.
+
 ## Fresh vs. resume
 
 - **Fresh session** — new context, cheap, but you must pass everything the future self needs in the prompt. Good for recurring chores ("triage my inbox") and standalone wake-ups.
@@ -51,7 +83,8 @@ When you resume, name the schedule after yourself (`resume-self`, `resume-<task>
 
 To resume (`codex exec resume <id>` / `claude --resume <id>`) you need an id, and an id does not come from thin air — it is **emitted by a prior headless invocation of the agent itself**. You can't read your own id mid-session; it's handed to you at launch. A tool driving these sessions typically runs an agent once in headless mode, captures the id from that run's structured output, and embeds it in the `--command` it later hands to `sundial add`.
 
-**Codex** — NDJSON on stdout; first line is `{"type":"thread.started","thread_id":"..."}`:
+**Codex** — only use `--json` for this short bootstrap/id-capture case. NDJSON
+arrives on stdout; the first line is `{"type":"thread.started","thread_id":"..."}`:
 ```bash
 out=$(codex exec --yolo --json "<initial prompt>")
 thread_id=$(printf '%s\n' "$out" | head -1 | jq -r '.thread_id')
@@ -72,5 +105,5 @@ A subtle point: the schedule file (and the git commit sundial pushes) embeds the
 ## Before you write the `--command`
 
 - **Always quote the nested prompt.** The command runs under a login shell. Use single quotes on the outer string and escape inner quotes as needed.
-- **Write outputs somewhere readable.** The future session has no conversational channel to reach the user. Log to a file, the data repo, or whatever external sink the user already watches.
+- **Write outputs somewhere readable.** The future session has no conversational channel to reach the user. Log plain agent output to a local file, the data repo, or whatever external sink the user already watches.
 - **The daemon can't tell "agent exited cleanly" from "agent fell over".** It only sees the shell exit code. If you care about outcome visibility, have the prompt instruct the agent to write a status file.
