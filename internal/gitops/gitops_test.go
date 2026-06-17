@@ -281,6 +281,57 @@ func TestCommitSchedule_ConcurrentSameRepo(t *testing.T) {
 	}
 }
 
+// TestPush_NoRemoteFailsFast verifies Push returns an error (rather than
+// hanging) when the repo has no push destination. This is the local stand-in
+// for issue #43's real failure mode — an SSH push blocking on a prompt — which
+// gitEnv (BatchMode) and the network timeout now prevent from hanging.
+func TestPush_NoRemoteFailsFast(t *testing.T) {
+	repo := initTestRepo(t)
+	g := NewGitOps(repo)
+
+	if err := g.Push(); err == nil {
+		t.Fatal("expected Push to fail on a repo with no remote, got nil")
+	} else if !strings.Contains(err.Error(), "git push failed") {
+		t.Fatalf("expected 'git push failed' in error, got: %v", err)
+	}
+}
+
+// TestGitEnv_DisablesPrompts verifies gitEnv injects the non-interactive guards
+// that keep a tty-less daemon from blocking on credential/host-key prompts.
+func TestGitEnv_DisablesPrompts(t *testing.T) {
+	t.Setenv("GIT_TERMINAL_PROMPT", "")
+	t.Setenv("GIT_SSH_COMMAND", "")
+
+	env := gitEnv()
+	var gotTerminal, gotSSH bool
+	for _, e := range env {
+		if e == "GIT_TERMINAL_PROMPT=0" {
+			gotTerminal = true
+		}
+		if strings.HasPrefix(e, "GIT_SSH_COMMAND=") && strings.Contains(e, "BatchMode=yes") {
+			gotSSH = true
+		}
+	}
+	if !gotTerminal {
+		t.Error("expected GIT_TERMINAL_PROMPT=0 in env")
+	}
+	if !gotSSH {
+		t.Error("expected GIT_SSH_COMMAND with BatchMode=yes in env")
+	}
+}
+
+// TestGitEnv_RespectsOperatorOverride verifies an operator-provided
+// GIT_SSH_COMMAND is not clobbered.
+func TestGitEnv_RespectsOperatorOverride(t *testing.T) {
+	t.Setenv("GIT_SSH_COMMAND", "ssh -i /custom/key")
+
+	for _, e := range gitEnv() {
+		if strings.HasPrefix(e, "GIT_SSH_COMMAND=") && strings.Contains(e, "BatchMode=yes") {
+			t.Fatalf("gitEnv overrode operator GIT_SSH_COMMAND: %q", e)
+		}
+	}
+}
+
 func TestHasPendingPushes_NoPushes(t *testing.T) {
 	repo := initTestRepo(t)
 

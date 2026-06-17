@@ -1,14 +1,31 @@
 package gitops
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/fyang0507/sundial/internal/model"
+)
+
+// Git invocations are bounded so a hung operation can never wedge the daemon's
+// single-writer mutating path indefinitely (issue #43). The daemon runs under
+// launchd with no controlling terminal: an SSH push that blocks on a passphrase
+// or host-key prompt, or an HTTPS push waiting on credentials, would otherwise
+// hang forever — and because Push and CommitSchedule share g.mu, that hang
+// wedges every subsequent mutating RPC while health/list stay responsive.
+//
+// localGitTimeout bounds fast local operations; networkGitTimeout bounds push.
+// The push budget stays under the CLI's 30s RPC deadline so `add` still returns
+// a result (with a push warning) instead of leaving the caller with a timeout.
+const (
+	localGitTimeout   = 15 * time.Second
+	networkGitTimeout = 25 * time.Second
 )
 
 // GitOps provides git operations scoped to a specific repository path.
@@ -103,11 +120,14 @@ func (g *GitOps) CommitSchedule(filePath, message string) error {
 }
 
 // Push runs git push, returning any error. The caller decides retry policy.
+// Push is the one network operation here, so it gets networkGitTimeout and
+// (via runGitTimeout) runs with interactive prompts disabled — a push that
+// cannot authenticate fails fast instead of blocking the daemon forever.
 func (g *GitOps) Push() error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
-	if _, err := runGit(g.repoPath, "push"); err != nil {
+	if _, err := runGitTimeout(g.repoPath, networkGitTimeout, "push"); err != nil {
 		return fmt.Errorf("git push failed: %w", err)
 	}
 	return nil
@@ -164,21 +184,55 @@ func (g *GitOps) ListModifiedScheduleFiles(schedulesDir string) ([]string, error
 	return result, nil
 }
 
-// runGit executes a git command in the given repoPath, returning trimmed
-// stdout. On failure, stderr is included in the returned error.
+// runGit executes a local git command in the given repoPath, returning trimmed
+// stdout. On failure, stderr is included in the returned error. It uses
+// localGitTimeout — callers that touch the network (push) use runGitTimeout
+// with a larger budget.
 func runGit(repoPath string, args ...string) (string, error) {
-	cmd := exec.Command("git", args...)
+	return runGitTimeout(repoPath, localGitTimeout, args...)
+}
+
+// runGitTimeout runs a git command bounded by the given timeout and with
+// interactive prompts disabled (see gitEnv). A timeout surfaces as a clear
+// error rather than a hang. On failure, stderr is included in the error.
+func runGitTimeout(repoPath string, timeout time.Duration, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = repoPath
+	cmd.Env = gitEnv()
 
 	var stdout, stderr strings.Builder
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	if err := cmd.Run(); err != nil {
+	err := cmd.Run()
+	if ctx.Err() == context.DeadlineExceeded {
+		return "", fmt.Errorf("git %s: timed out after %s (the daemon runs non-interactively; a credential or host-key prompt may be blocking)", strings.Join(args, " "), timeout)
+	}
+	if err != nil {
 		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
 	}
 
 	return strings.TrimSpace(stdout.String()), nil
+}
+
+// gitEnv returns the daemon's environment with interactive prompts disabled.
+// Without a controlling terminal, any git operation that would prompt for input
+// blocks forever. GIT_TERMINAL_PROMPT=0 suppresses git's own prompts (HTTPS
+// credentials); forcing ssh into BatchMode suppresses SSH passphrase and
+// host-key prompts. Both are set only when the operator hasn't already provided
+// a value, so an explicit GIT_SSH_COMMAND (e.g. a custom key) still wins.
+func gitEnv() []string {
+	env := os.Environ()
+	if os.Getenv("GIT_TERMINAL_PROMPT") == "" {
+		env = append(env, "GIT_TERMINAL_PROMPT=0")
+	}
+	if os.Getenv("GIT_SSH_COMMAND") == "" {
+		env = append(env, "GIT_SSH_COMMAND=ssh -o BatchMode=yes -o ConnectTimeout=10")
+	}
+	return env
 }
 
 // splitLines splits a string by newlines, filtering out empty strings.
