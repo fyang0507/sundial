@@ -110,6 +110,9 @@ func TestLoad_MinimalConfig_DefaultsApplied(t *testing.T) {
 	if cfg.Daemon.PreconditionMaxElapsed != "2h" {
 		t.Errorf("PreconditionMaxElapsed = %q, want 2h", cfg.Daemon.PreconditionMaxElapsed)
 	}
+	if cfg.Daemon.MissGracePeriod != model.DefaultMissGracePeriod {
+		t.Errorf("MissGracePeriod = %q, want %q", cfg.Daemon.MissGracePeriod, model.DefaultMissGracePeriod)
+	}
 	// Wake management is off by default; lead_time defaults to "3m". A config with
 	// no `wake:` block must load with these values (backward compatibility).
 	if cfg.Daemon.Wake.Enabled {

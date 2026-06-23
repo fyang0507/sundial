@@ -19,6 +19,14 @@ const (
 	// before the fire instant, so the schedule fires on time rather than racing
 	// the wake. Override via DaemonConfig.Wake.LeadTime.
 	DefaultWakeLeadTime = "3m"
+
+	// DefaultMissGracePeriod is the window within which a fire missed while the
+	// daemon was offline or asleep is still executed once on the next tick rather
+	// than logged as a miss. 60s comfortably covers the brief gaps of a daemon
+	// restart or a short sleep while still keeping a stale catch-up fire from
+	// running long after its scheduled instant. Override via
+	// DaemonConfig.MissGracePeriod.
+	DefaultMissGracePeriod = "60s"
 )
 
 // DefaultPreconditionBackoff is the daemon-wide default exponential backoff
@@ -58,6 +66,13 @@ type DaemonConfig struct {
 	// a one-off `at` schedule (which has no next regular fire to bound retries).
 	// Empty => DefaultPreconditionMaxElapsed.
 	PreconditionMaxElapsed string `yaml:"precondition_max_elapsed"`
+	// MissGracePeriod is the window (Go duration string, e.g. "60s") within which
+	// a fire missed while the daemon was offline or asleep is still executed once
+	// on the next tick. A miss inside the window is left in the past so the run
+	// loop fires it exactly once (coalescing repeated missed occurrences into a
+	// single catch-up); a miss beyond the window is logged as a miss and the
+	// schedule advanced to its next future fire. Empty => DefaultMissGracePeriod.
+	MissGracePeriod string `yaml:"miss_grace_period"`
 	// Wake configures the optional macOS pmset wake integration: when enabled the
 	// daemon manages a single pmset wake event for the soonest fire across all
 	// active schedules so a sleeping Mac wakes before a schedule is due.

@@ -8,9 +8,6 @@ import (
 	"github.com/fyang0507/sundial/internal/trigger"
 )
 
-// missGracePeriod is the window within which a missed fire is still executed.
-const missGracePeriod = 60 * time.Second
-
 // maxMissEntries is the cap on individual miss log entries per schedule during
 // a single startup reconciliation. Beyond this, a single miss_summary is written.
 const maxMissEntries = 10
@@ -211,7 +208,7 @@ func (d *Daemon) handleMissedFires() {
 
 		elapsed := now.Sub(nextFire)
 
-		if elapsed <= missGracePeriod {
+		if elapsed <= d.missGracePeriod() {
 			// Within grace: leave NextFireAt in the past. The run loop's
 			// fireDueSchedules pass (which runs right after startup reconcile,
 			// and again after a wake-gap detection) will fire it once. We do
@@ -246,6 +243,25 @@ func (d *Daemon) handleMissedFires() {
 			}
 		}
 	}
+}
+
+// missGracePeriod resolves the configured missed-fire grace window, falling back
+// to the package default if it is empty or unparsable (so a typo degrades safely
+// to the documented 60s rather than disabling miss handling). It mirrors
+// wakeLeadTime's degrade-gracefully shape: a malformed value logs a single WARN
+// per call and uses the default. The window is the threshold handleMissedFires
+// uses to decide whether a fire missed while the daemon was offline/asleep is
+// still executed once (within grace) or logged as a miss and advanced (beyond).
+func (d *Daemon) missGracePeriod() time.Duration {
+	if d.cfg.Daemon.MissGracePeriod != "" {
+		if dur, err := time.ParseDuration(d.cfg.Daemon.MissGracePeriod); err == nil && dur >= 0 {
+			return dur
+		}
+		log.Printf("WARN: invalid miss_grace_period %q, using default %s",
+			d.cfg.Daemon.MissGracePeriod, model.DefaultMissGracePeriod)
+	}
+	dur, _ := time.ParseDuration(model.DefaultMissGracePeriod)
+	return dur
 }
 
 // logMissedFires records missed fire entries for a schedule. It computes all

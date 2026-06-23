@@ -32,6 +32,9 @@ const ConfigTemplate = `# Daemon options for sundial. The data_repo itself is re
 #   # Give-up budget for a precondition on a one-off 'at' schedule (no next
 #   # regular fire to bound retries). Defaults to the backoff cap.
 #   precondition_max_elapsed: "2h"
+#   # Window within which a fire missed while the daemon was offline/asleep is
+#   # still executed once on the next tick (beyond it: logged as a miss).
+#   miss_grace_period: "60s"
 #   # Wake a sleeping Mac before a due schedule (macOS pmset). Off by default.
 #   # When enabled, the daemon schedules ONE pmset wake event for the soonest
 #   # fire across all active schedules, 'lead_time' before it. Enabling requires
