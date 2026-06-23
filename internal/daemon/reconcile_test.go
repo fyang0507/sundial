@@ -1206,6 +1206,104 @@ func TestHandleMissedFires_AtBeyondGraceCompletes(t *testing.T) {
 	}
 }
 
+// TestMissGracePeriod_Helper verifies the helper resolves the configured value,
+// falling back to the documented default on empty or malformed input (mirroring
+// wakeLeadTime's degrade-gracefully contract).
+func TestMissGracePeriod_Helper(t *testing.T) {
+	defaultDur, _ := time.ParseDuration(model.DefaultMissGracePeriod)
+
+	cases := []struct {
+		name string
+		cfg  string
+		want time.Duration
+	}{
+		{"empty uses default", "", defaultDur},
+		{"valid is parsed", "5m", 5 * time.Minute},
+		{"malformed uses default", "not-a-duration", defaultDur},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d := newTestDaemon(t)
+			d.cfg.Daemon.MissGracePeriod = tc.cfg
+			if got := d.missGracePeriod(); got != tc.want {
+				t.Errorf("missGracePeriod() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestHandleMissedFires_CustomGraceChangesClassification proves the configured
+// grace window actually drives classification: with a custom 10m window, a fire
+// past by 5m (inside the window) is LEFT in the past to fire once, while a fire
+// past by 15m (beyond the window) is treated as a miss and advanced to a future
+// fire with a miss entry logged. The default 60s window would classify both as
+// misses, so this exercises the config plumbing end to end.
+func TestHandleMissedFires_CustomGraceChangesClassification(t *testing.T) {
+	d := newTestDaemon(t)
+	d.cfg.Daemon.MissGracePeriod = "10m"
+
+	// Within the custom 10m grace: 5m in the past.
+	within := makeCronDesired("sch_grace_in", "within-custom-grace", "* * * * *")
+	if err := d.desiredStore.Write(within); err != nil {
+		t.Fatal(err)
+	}
+	withinSched := addSchedule(t, d, within)
+	withinPast := time.Now().Add(-5 * time.Minute)
+	withinSched.runtime.NextFireAt = withinPast
+	if err := d.runtimeStore.Write(withinSched.runtime); err != nil {
+		t.Fatal(err)
+	}
+
+	// Beyond the custom 10m grace: 15m in the past.
+	beyond := makeCronDesired("sch_grace_out", "beyond-custom-grace", "* * * * *")
+	if err := d.desiredStore.Write(beyond); err != nil {
+		t.Fatal(err)
+	}
+	beyondSched := addSchedule(t, d, beyond)
+	beyondPast := time.Now().Add(-15 * time.Minute)
+	beyondSched.runtime.NextFireAt = beyondPast
+	if err := d.runtimeStore.Write(beyondSched.runtime); err != nil {
+		t.Fatal(err)
+	}
+
+	d.handleMissedFires()
+
+	d.mu.RLock()
+	withinAfter := d.schedules["sch_grace_in"].runtime
+	beyondAfter := d.schedules["sch_grace_out"].runtime
+	d.mu.RUnlock()
+
+	// Within custom grace: NextFireAt LEFT in the past so the run loop fires once.
+	if !withinAfter.NextFireAt.Equal(withinPast) {
+		t.Errorf("within-custom-grace NextFireAt = %v, want left in past at %v",
+			withinAfter.NextFireAt, withinPast)
+	}
+	if withinAfter.NextFireAt.After(time.Now()) {
+		t.Error("within-custom-grace NextFireAt should remain in the past")
+	}
+
+	// Beyond custom grace: advanced to a future fire and a miss logged.
+	if !beyondAfter.NextFireAt.After(time.Now()) {
+		t.Errorf("beyond-custom-grace NextFireAt = %v, want advanced to the future",
+			beyondAfter.NextFireAt)
+	}
+	entries, err := d.runLogStore.Read("sch_grace_out")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hasMiss := false
+	for _, e := range entries {
+		if e.Type == model.LogTypeMiss || e.Type == model.LogTypeMissSummary {
+			hasMiss = true
+			break
+		}
+	}
+	if !hasMiss {
+		t.Error("expected a miss log entry for the beyond-custom-grace schedule")
+	}
+}
+
 // Ensure the schedules dir exists before running any file-based test.
 func init() {
 	// Temp dirs handle this in each test, nothing needed globally.

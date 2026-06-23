@@ -11,6 +11,7 @@ data_repo: "~/data_repo"   # REQUIRED — path to the data repo for schedule def
 #   log_file: "~/Library/Logs/sundial/sundial.log"
 #   precondition_backoff: ["1m", "5m", "30m", "1h", "2h"]  # default --precondition retry backoff (last entry repeats as cap)
 #   precondition_max_elapsed: "2h"       # give-up budget for a precondition on a one-off `at` schedule
+#   miss_grace_period: "60s"             # window for executing a fire missed while the daemon was offline/asleep (beyond it: logged as a miss)
 #   wake:                                # wake a sleeping Mac before a due schedule (macOS pmset)
 #     enabled: false                     # off by default; enabling requires the sudoers step from `sundial health`/setup.md
 #     lead_time: "3m"                    # how far before the soonest fire to wake

@@ -100,6 +100,9 @@ func applyDefaults(cfg *model.Config) {
 	if cfg.Daemon.PreconditionMaxElapsed == "" {
 		cfg.Daemon.PreconditionMaxElapsed = model.DefaultPreconditionMaxElapsed
 	}
+	if cfg.Daemon.MissGracePeriod == "" {
+		cfg.Daemon.MissGracePeriod = model.DefaultMissGracePeriod
+	}
 	// Wake.Enabled defaults to false naturally (the zero value); only the lead
 	// time needs a default so an enabled-but-unspecified config still wakes early.
 	if cfg.Daemon.Wake.LeadTime == "" {
