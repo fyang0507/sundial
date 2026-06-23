@@ -12,6 +12,13 @@ const (
 	// equals the last (cap) entry of DefaultPreconditionBackoff so a single `at`
 	// gives up roughly one backoff cap after its first deferral.
 	DefaultPreconditionMaxElapsed = "2h"
+
+	// DefaultWakeLeadTime is how far before a due fire the daemon schedules a
+	// pmset wake event when wake management is enabled. A few minutes of lead
+	// gives the machine time to fully resume (and the watchdog loop time to tick)
+	// before the fire instant, so the schedule fires on time rather than racing
+	// the wake. Override via DaemonConfig.Wake.LeadTime.
+	DefaultWakeLeadTime = "3m"
 )
 
 // DefaultPreconditionBackoff is the daemon-wide default exponential backoff
@@ -51,6 +58,30 @@ type DaemonConfig struct {
 	// a one-off `at` schedule (which has no next regular fire to bound retries).
 	// Empty => DefaultPreconditionMaxElapsed.
 	PreconditionMaxElapsed string `yaml:"precondition_max_elapsed"`
+	// Wake configures the optional macOS pmset wake integration: when enabled the
+	// daemon manages a single pmset wake event for the soonest fire across all
+	// active schedules so a sleeping Mac wakes before a schedule is due.
+	Wake WakeConfig `yaml:"wake"`
+}
+
+// WakeConfig is the global, opt-in toggle for macOS pmset wake management.
+//
+// It is intentionally daemon-global rather than per-schedule: the daemon owns
+// exactly ONE pmset wake event (for the soonest fire across all active
+// schedules), so the policy "should the machine ever wake itself for sundial"
+// is a single system-wide decision, not something each schedule re-litigates.
+//
+// Enabling requires a NOPASSWD sudoers rule (pmset needs root); `sundial health`
+// and setup.md print the exact line. When the rule is absent or pmset is
+// unavailable, the daemon disables wake management gracefully and never breaks
+// scheduling.
+type WakeConfig struct {
+	// Enabled turns pmset wake management on. Default false: sundial never
+	// touches the machine's power schedule unless the operator opts in.
+	Enabled bool `yaml:"enabled"`
+	// LeadTime is how far before the soonest fire to wake (Go duration). Empty =>
+	// DefaultWakeLeadTime.
+	LeadTime string `yaml:"lead_time"`
 }
 
 // StateConfig holds paths for local runtime data.

@@ -11,6 +11,7 @@ import (
 
 	"github.com/fyang0507/sundial/internal/launchd"
 	"github.com/fyang0507/sundial/internal/model"
+	"github.com/fyang0507/sundial/internal/power"
 	"github.com/fyang0507/sundial/internal/similarity"
 	"github.com/fyang0507/sundial/internal/trigger"
 )
@@ -677,6 +678,34 @@ func (d *Daemon) handleHealth() (*model.HealthResult, *model.RPCError) {
 		}
 	}
 
+	// Probe pmset wake management ONLY when the operator opted in. The probes fork
+	// subprocesses (pmset -g, and sudo -n for the permission check); running them
+	// on every health call for a default-off feature is wasteful and non-hermetic
+	// (it would shell out to real pmset/sudo in tests). When wake is disabled we
+	// report nothing about pmset — health simply shows "wake: disabled".
+	var pmsetAvailable, wakePermission bool
+	if d.cfg.Daemon.Wake.Enabled && d.powerRunner != nil {
+		pmsetAvailable = power.Available(d.powerRunner)
+		if pmsetAvailable {
+			wakePermission = power.HasPermission(d.powerRunner)
+		}
+	}
+
+	d.wakeMu.Lock()
+	managedWakeAt := d.managedWakeAt
+	d.wakeMu.Unlock()
+	wakeNextAt := ""
+	if !managedWakeAt.IsZero() {
+		wakeNextAt = managedWakeAt.UTC().Format(time.RFC3339)
+	}
+
+	// Surface the sudoers hint only when the operator opted in but the rule is
+	// missing — that is the one case where it is actionable guidance.
+	wakeSudoersHint := ""
+	if d.cfg.Daemon.Wake.Enabled && pmsetAvailable && !wakePermission {
+		wakeSudoersHint = power.SudoersLine(currentUserName())
+	}
+
 	return &model.HealthResult{
 		DaemonRunning: true,
 		PID:           os.Getpid(),
@@ -688,6 +717,12 @@ func (d *Daemon) handleHealth() (*model.HealthResult, *model.RPCError) {
 		LogFile:       d.cfg.Daemon.LogFile,
 		Launchd:       launchd.IsInstalled(),
 		ScheduleCount: scheduleCount,
+
+		WakeEnabled:     d.cfg.Daemon.Wake.Enabled,
+		PmsetAvailable:  pmsetAvailable,
+		WakePermission:  wakePermission,
+		WakeNextAt:      wakeNextAt,
+		WakeSudoersHint: wakeSudoersHint,
 	}, nil
 }
 
