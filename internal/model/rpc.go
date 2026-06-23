@@ -180,6 +180,22 @@ type HealthResult struct {
 	LogFile       string `json:"log_file"`
 	Launchd       bool   `json:"launchd"`
 	ScheduleCount int    `json:"schedule_count"`
+
+	// --- macOS pmset wake management ---
+	// WakeEnabled mirrors cfg.Daemon.Wake.Enabled (the opt-in toggle).
+	WakeEnabled bool `json:"wake_enabled"`
+	// PmsetAvailable reports whether pmset exists and works on this host.
+	PmsetAvailable bool `json:"pmset_available"`
+	// WakePermission reports whether the daemon can run pmset under `sudo -n`
+	// (i.e. the NOPASSWD sudoers rule is installed).
+	WakePermission bool `json:"wake_permission"`
+	// WakeNextAt is the RFC3339 timestamp of the pmset wake event the daemon
+	// currently owns, or empty if none is scheduled.
+	WakeNextAt string `json:"wake_next_at,omitempty"`
+	// WakeSudoersHint is the exact sudoers line to install. Populated only when
+	// wake is enabled but permission is missing, so it surfaces as actionable
+	// guidance rather than noise when everything is working.
+	WakeSudoersHint string `json:"wake_sudoers_hint,omitempty"`
 }
 
 // DuplicateInfo is included in error data when a duplicate schedule is detected.

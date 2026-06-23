@@ -54,6 +54,18 @@ func (d *Daemon) runLoop() {
 	for {
 		nextID, nextTime := d.soonestFire()
 
+		// Reconcile the pmset wake event with the soonest fire. This single call
+		// covers every mutation path — add/remove/pause/unpause/fire/advance/defer/
+		// reconcile all end in signalWake, which re-runs this loop and re-syncs the
+		// wake event. It is a no-op when wake is disabled or nothing changed, and
+		// never holds d.mu while shelling out to pmset. Use zero time when there is
+		// no active schedule so updateWakeSchedule tears down any owned event.
+		if nextID == "" {
+			d.updateWakeSchedule(time.Time{})
+		} else {
+			d.updateWakeSchedule(nextTime)
+		}
+
 		// Bound the sleep at maxTick so we keep waking for gap/wake detection
 		// even when the next fire is far off or there are no active schedules.
 		dur := maxTick

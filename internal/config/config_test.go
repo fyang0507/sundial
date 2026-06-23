@@ -110,6 +110,14 @@ func TestLoad_MinimalConfig_DefaultsApplied(t *testing.T) {
 	if cfg.Daemon.PreconditionMaxElapsed != "2h" {
 		t.Errorf("PreconditionMaxElapsed = %q, want 2h", cfg.Daemon.PreconditionMaxElapsed)
 	}
+	// Wake management is off by default; lead_time defaults to "3m". A config with
+	// no `wake:` block must load with these values (backward compatibility).
+	if cfg.Daemon.Wake.Enabled {
+		t.Error("Wake.Enabled = true, want false by default")
+	}
+	if cfg.Daemon.Wake.LeadTime != model.DefaultWakeLeadTime {
+		t.Errorf("Wake.LeadTime = %q, want %q", cfg.Daemon.Wake.LeadTime, model.DefaultWakeLeadTime)
+	}
 }
 
 func TestValidate_MissingDataRepo(t *testing.T) {

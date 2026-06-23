@@ -15,7 +15,7 @@ This file is a catalog. Pick your path.
 
 ## First time?
 
-If `sundial` isn't on your PATH, the daemon isn't running, or you don't yet have a data repo, start at **[setup.md](setup.md)** — one-time initialization.
+If `sundial` isn't on your PATH, the daemon isn't running, or you don't yet have a data repo, start at **[setup.md](setup.md)** — one-time initialization. To have a sleeping Mac wake itself for due fires (opt-in, requires a sudoers step), see "Waking the Mac for due schedules" in [setup.md](setup.md).
 
 ## Trigger types
 

@@ -151,7 +151,46 @@ func FormatHealthResult(r *model.HealthResult, jsonMode bool) string {
 	kv(&b, "log_file", r.LogFile)
 	kv(&b, "launchd", launchdStatus)
 	kv(&b, "schedules", fmt.Sprintf("%d active", r.ScheduleCount))
+
+	// Wake section: only meaningful detail when the operator opted in. When
+	// disabled we keep it to a single line so health stays scannable.
+	if r.WakeEnabled {
+		wakeStatus := "enabled"
+		switch {
+		case !r.PmsetAvailable:
+			wakeStatus = "enabled (inactive: pmset unavailable)"
+		case !r.WakePermission:
+			wakeStatus = "enabled (inactive: sudoers not configured)"
+		case r.WakeNextAt != "":
+			// WakeNextAt is RFC3339 UTC (for machine consumers of --json). Render it
+			// in LOCAL time here so it matches what `pmset -g sched` prints (pmset
+			// lists events in local wall-clock time), avoiding a confusing UTC-vs-local
+			// discrepancy when the operator cross-checks.
+			wakeStatus = "enabled (next wake " + localWakeTime(r.WakeNextAt) + ")"
+		default:
+			wakeStatus = "enabled (no upcoming fire)"
+		}
+		kv(&b, "wake", wakeStatus)
+		// Mirror how git recovery commands are surfaced: an actionable line the
+		// operator can copy-paste to fix the missing permission.
+		if r.WakeSudoersHint != "" {
+			kv(&b, "  fix", "add to sudoers (run 'sudo visudo'): "+r.WakeSudoersHint)
+		}
+	} else {
+		kv(&b, "wake", "disabled")
+	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+// localWakeTime renders an RFC3339 UTC timestamp in the host's local time, to
+// match `pmset -g sched` output. On a parse error it returns the input verbatim
+// so health never hides the raw value.
+func localWakeTime(rfc3339 string) string {
+	t, err := time.Parse(time.RFC3339, rfc3339)
+	if err != nil {
+		return rfc3339
+	}
+	return t.Local().Format("2006-01-02 15:04:05 MST")
 }
 
 // FormatGeocodeResult formats geocode output as key:value pairs or JSON.

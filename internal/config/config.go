@@ -100,6 +100,11 @@ func applyDefaults(cfg *model.Config) {
 	if cfg.Daemon.PreconditionMaxElapsed == "" {
 		cfg.Daemon.PreconditionMaxElapsed = model.DefaultPreconditionMaxElapsed
 	}
+	// Wake.Enabled defaults to false naturally (the zero value); only the lead
+	// time needs a default so an enabled-but-unspecified config still wakes early.
+	if cfg.Daemon.Wake.LeadTime == "" {
+		cfg.Daemon.Wake.LeadTime = model.DefaultWakeLeadTime
+	}
 }
 
 // expandPaths expands ~ to the user's home directory in all path fields.

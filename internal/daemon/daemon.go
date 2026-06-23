@@ -12,6 +12,7 @@ import (
 	"github.com/fyang0507/sundial/internal/gitops"
 	"github.com/fyang0507/sundial/internal/ipc"
 	"github.com/fyang0507/sundial/internal/model"
+	"github.com/fyang0507/sundial/internal/power"
 	"github.com/fyang0507/sundial/internal/store"
 )
 
@@ -36,6 +37,23 @@ type Daemon struct {
 	schedules map[string]*activeSchedule // protected by mu
 	mu        sync.RWMutex
 
+	// --- macOS pmset wake management (opt-in via cfg.Daemon.Wake.Enabled) ---
+	//
+	// powerRunner is injectable so tests drive a mock and never shell out to real
+	// pmset/sudo. Production gets power.DefaultRunner() in New().
+	powerRunner power.CommandRunner
+	// wakeMu guards the wake-management state below. It is separate from mu so
+	// updateWakeSchedule (which may shell out to pmset) never blocks schedule
+	// reads/writes, and so we never hold mu across a pmset call.
+	wakeMu sync.Mutex
+	// managedWakeAt is the single pmset wake event the daemon currently owns
+	// (zero = none). We persist it (see wake.go) so a daemon restart can cancel a
+	// stale event it scheduled in a previous run before scheduling a new one.
+	managedWakeAt time.Time
+	// wakeDisabledWarned guards the "wake enabled but pmset/permission missing"
+	// WARN so we log it once rather than on every run-loop tick.
+	wakeDisabledWarned bool
+
 	startedAt time.Time
 
 	wake chan struct{} // signal to re-evaluate next fire
@@ -57,6 +75,7 @@ func New(cfg *model.Config) (*Daemon, error) {
 		runtimeStore: store.NewRuntimeStore(cfg.State.Path),
 		runLogStore:  store.NewRunLogStore(cfg.State.LogsPath),
 		gitOps:       gitops.NewGitOps(cfg.DataRepo),
+		powerRunner:  power.DefaultRunner(),
 		schedules:    make(map[string]*activeSchedule),
 		startedAt:    time.Now(),
 		wake:         make(chan struct{}, 1),
@@ -84,6 +103,11 @@ func (d *Daemon) Start() error {
 	if err := d.runLogStore.EnsureDir(); err != nil {
 		return fmt.Errorf("ensure run log store dir: %w", err)
 	}
+
+	// 1b. Load any pmset wake event we persisted in a previous run so the first
+	// updateWakeSchedule can cancel/replace a stale event rather than orphan it.
+	// Best-effort: a missing/corrupt file just means "no event known".
+	d.loadManagedWake()
 
 	// 2. Run initial reconciliation with missed fire handling.
 	if err := d.reconcile(true); err != nil {
