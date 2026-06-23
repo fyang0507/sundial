@@ -118,6 +118,8 @@ sundial list --json
 sundial show <id> --json
 ```
 
+`sundial show` also surfaces the schedule's readiness configuration (`exec_timeout`, `precondition`, and any `precondition_backoff`/`precondition_max_elapsed` overrides) and — crucially — its **live precondition-backoff state**. When a fire is currently held back because the precondition exited non-zero, `show` renders a `deferred: precondition not met (attempt N, next retry <local time>)` line (in JSON: `precondition_deferred`, `precondition_attempts`, `precondition_retry_at`), and `list` tags that schedule `[deferred]`. This lets you distinguish a schedule *waiting on a precondition* (its `next_fire` is the retry instant, not the natural slot) from one that is genuinely idle until its next fire. It is the live complement to the `deferred` run-log entries that record past deferrals.
+
 The git-tracked files under `<data_repo>/sundial/schedules/` hold only the definition (trigger, command, status) — never the runtime fields — so a raw file read can't tell you when something next fires or whether its last run succeeded. Treat those files as **persistence and sync, not a query API**: read them only for git archaeology (what changed, when) or when debugging the daemon. For everything else, ask the CLI.
 
 ### Which data repo? (it's not your cwd)

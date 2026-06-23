@@ -132,6 +132,131 @@ func TestHandleShow_Found(t *testing.T) {
 	}
 }
 
+func TestHandleShow_ConfigFields(t *testing.T) {
+	d := newTestDaemon(t)
+
+	desired := makeCronDesired("sch_cfg", "gated", "0 12 * * *")
+	desired.ExecTimeout = "30m"
+	desired.Precondition = "test -f /tmp/ready"
+	desired.PreconditionBackoff = []string{"1m", "5m"}
+	desired.PreconditionMaxElapsed = "6h"
+
+	trig, err := trigger.ParseTrigger(desired.Trigger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.mu.Lock()
+	d.schedules["sch_cfg"] = &activeSchedule{
+		desired: desired,
+		runtime: &model.RuntimeState{ID: "sch_cfg", NextFireAt: trig.NextFireTime(time.Now())},
+		trigger: trig,
+	}
+	d.mu.Unlock()
+
+	result, rpcErr := d.handleShow(model.ShowParams{ID: "sch_cfg"})
+	if rpcErr != nil {
+		t.Fatalf("unexpected error: %v", rpcErr.Message)
+	}
+	if result.ExecTimeout != "30m" {
+		t.Errorf("expected exec_timeout 30m, got %q", result.ExecTimeout)
+	}
+	if result.Precondition != "test -f /tmp/ready" {
+		t.Errorf("expected precondition, got %q", result.Precondition)
+	}
+	if len(result.PreconditionBackoff) != 2 || result.PreconditionBackoff[0] != "1m" {
+		t.Errorf("expected backoff override, got %v", result.PreconditionBackoff)
+	}
+	if result.PreconditionMaxElapsed != "6h" {
+		t.Errorf("expected max_elapsed 6h, got %q", result.PreconditionMaxElapsed)
+	}
+	// Not deferred: live state must be empty.
+	if result.PreconditionDeferred || result.Deferred || result.PreconditionAttempts != 0 || result.PreconditionRetryAt != "" {
+		t.Errorf("expected no live deferral state, got %+v", result)
+	}
+}
+
+func TestHandleShow_Deferred(t *testing.T) {
+	d := newTestDaemon(t)
+
+	desired := makeCronDesired("sch_def", "gated", "0 12 * * *")
+	desired.Precondition = "test -f /tmp/ready"
+
+	trig, err := trigger.ParseTrigger(desired.Trigger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstDeferred := time.Now().Add(-2 * time.Minute)
+	retryAt := time.Now().Add(5 * time.Minute).UTC()
+	d.mu.Lock()
+	d.schedules["sch_def"] = &activeSchedule{
+		desired: desired,
+		runtime: &model.RuntimeState{
+			ID:                          "sch_def",
+			NextFireAt:                  retryAt,
+			PreconditionAttempts:        3,
+			PreconditionFirstDeferredAt: &firstDeferred,
+		},
+		trigger: trig,
+	}
+	d.mu.Unlock()
+
+	result, rpcErr := d.handleShow(model.ShowParams{ID: "sch_def"})
+	if rpcErr != nil {
+		t.Fatalf("unexpected error: %v", rpcErr.Message)
+	}
+	if !result.Deferred || !result.PreconditionDeferred {
+		t.Errorf("expected deferred=true, got Deferred=%v PreconditionDeferred=%v", result.Deferred, result.PreconditionDeferred)
+	}
+	if result.PreconditionAttempts != 3 {
+		t.Errorf("expected 3 attempts, got %d", result.PreconditionAttempts)
+	}
+	want := retryAt.Format(time.RFC3339)
+	if result.PreconditionRetryAt != want {
+		t.Errorf("expected retry_at %q, got %q", want, result.PreconditionRetryAt)
+	}
+}
+
+func TestHandleList_FlagsDeferred(t *testing.T) {
+	d := newTestDaemon(t)
+
+	normal := makeCronDesired("sch_norm", "normal", "0 12 * * *")
+	gated := makeCronDesired("sch_gated", "gated", "0 12 * * *")
+	gated.Precondition = "test -f /tmp/ready"
+
+	for _, ds := range []*model.DesiredState{normal, gated} {
+		trig, err := trigger.ParseTrigger(ds.Trigger)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rt := &model.RuntimeState{ID: ds.ID, NextFireAt: trig.NextFireTime(time.Now())}
+		if ds.ID == "sch_gated" {
+			firstDeferred := time.Now().Add(-time.Minute)
+			rt.PreconditionFirstDeferredAt = &firstDeferred
+			rt.PreconditionAttempts = 1
+		}
+		d.mu.Lock()
+		d.schedules[ds.ID] = &activeSchedule{desired: ds, runtime: rt, trigger: trig}
+		d.mu.Unlock()
+	}
+
+	result, rpcErr := d.handleList()
+	if rpcErr != nil {
+		t.Fatalf("unexpected error: %v", rpcErr.Message)
+	}
+	for _, s := range result.Schedules {
+		switch s.ID {
+		case "sch_gated":
+			if !s.Deferred {
+				t.Errorf("expected sch_gated flagged deferred")
+			}
+		case "sch_norm":
+			if s.Deferred {
+				t.Errorf("expected sch_norm NOT flagged deferred")
+			}
+		}
+	}
+}
+
 func TestHandleShow_NotFound(t *testing.T) {
 	d := newTestDaemon(t)
 

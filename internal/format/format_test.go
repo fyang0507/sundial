@@ -2,6 +2,7 @@ package format
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -218,6 +219,114 @@ func TestFormatShowResult_JSON(t *testing.T) {
 	var parsed map[string]interface{}
 	if err := json.Unmarshal([]byte(got), &parsed); err != nil {
 		t.Fatalf("invalid JSON: %v", err)
+	}
+}
+
+func TestFormatShowResult_ConfigFields(t *testing.T) {
+	r := &model.ShowResult{
+		ScheduleSummary: model.ScheduleSummary{
+			ID:       "sch_cfg",
+			Name:     "Gated",
+			Schedule: "daily at 9am",
+			NextFire: "2026-04-14 9:00am PDT",
+			Status:   "active",
+		},
+		Command:                "echo hi",
+		ExecTimeout:            "30m",
+		Precondition:           "test -f /tmp/ready",
+		PreconditionBackoff:    []string{"1m", "5m", "30m"},
+		PreconditionMaxElapsed: "6h",
+	}
+	got := FormatShowResult(r, false)
+	for _, want := range []string{
+		"exec_timeout: 30m",
+		"precondition: test -f /tmp/ready",
+		"precondition_backoff: 1m, 5m, 30m",
+		"precondition_max_elapsed: 6h",
+	} {
+		if !contains(got, want) {
+			t.Errorf("expected %q in show output, got:\n%s", want, got)
+		}
+	}
+}
+
+func TestFormatShowResult_ConfigFieldsOmittedWhenEmpty(t *testing.T) {
+	r := &model.ShowResult{
+		ScheduleSummary: model.ScheduleSummary{ID: "sch_plain", Status: "active"},
+		Command:         "echo hi",
+	}
+	got := FormatShowResult(r, false)
+	for _, absent := range []string{"exec_timeout", "precondition", "deferred"} {
+		if contains(got, absent) {
+			t.Errorf("%q should be omitted when unset, got:\n%s", absent, got)
+		}
+	}
+}
+
+func TestFormatShowResult_Deferred(t *testing.T) {
+	retry := time.Date(2026, 4, 14, 16, 5, 0, 0, time.UTC)
+	r := &model.ShowResult{
+		ScheduleSummary: model.ScheduleSummary{
+			ID:       "sch_def",
+			Name:     "Gated",
+			Schedule: "daily at 9am",
+			NextFire: "2026-04-14 9:05am PDT",
+			Status:   "active",
+			Deferred: true,
+		},
+		Command:              "echo hi",
+		Precondition:         "test -f /tmp/ready",
+		PreconditionDeferred: true,
+		PreconditionAttempts: 3,
+		PreconditionRetryAt:  retry.Format(time.RFC3339),
+	}
+	got := FormatShowResult(r, false)
+	if !contains(got, "deferred: precondition not met (attempt 3, next retry ") {
+		t.Errorf("expected deferred line with attempt count, got:\n%s", got)
+	}
+	// Retry time should be rendered in LOCAL time (match wake convention).
+	wantLocal := retry.Local().Format("2006-01-02 15:04:05 MST")
+	if !contains(got, wantLocal) {
+		t.Errorf("expected local retry time %q, got:\n%s", wantLocal, got)
+	}
+}
+
+func TestFormatShowResult_DeferredJSON(t *testing.T) {
+	r := &model.ShowResult{
+		ScheduleSummary:      model.ScheduleSummary{ID: "sch_def", Status: "active", Deferred: true},
+		Command:              "echo hi",
+		ExecTimeout:          "10m",
+		Precondition:         "true",
+		PreconditionDeferred: true,
+		PreconditionAttempts: 2,
+		PreconditionRetryAt:  "2026-04-14T16:05:00Z",
+	}
+	got := FormatShowResult(r, true)
+	var parsed map[string]interface{}
+	if err := json.Unmarshal([]byte(got), &parsed); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	for _, k := range []string{"exec_timeout", "precondition", "precondition_deferred", "precondition_attempts", "precondition_retry_at"} {
+		if _, ok := parsed[k]; !ok {
+			t.Errorf("expected JSON key %q, got: %s", k, got)
+		}
+	}
+}
+
+func TestFormatListResult_DeferredTag(t *testing.T) {
+	r := &model.ListResult{
+		Schedules: []model.ScheduleSummary{
+			{ID: "sch_def", Name: "Gated", Schedule: "daily at 9am", NextFire: "soon", Status: "active", Deferred: true},
+			{ID: "sch_norm", Name: "Normal", Schedule: "daily at 9am", NextFire: "later", Status: "active"},
+		},
+	}
+	got := FormatListResult(r, false)
+	if !contains(got, "active [deferred]") {
+		t.Errorf("expected deferred schedule tagged, got:\n%s", got)
+	}
+	// The normal schedule must not be tagged: count occurrences of the tag.
+	if strings.Count(got, "[deferred]") != 1 {
+		t.Errorf("expected exactly one [deferred] tag, got:\n%s", got)
 	}
 }
 

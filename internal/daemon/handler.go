@@ -625,6 +625,24 @@ func (d *Daemon) handleShow(p model.ShowParams) (*model.ShowResult, *model.RPCEr
 		CreatedAt:         sched.desired.CreatedAt.Format(time.RFC3339),
 		RecreationCommand: sched.desired.RecreationCommand,
 		Detach:            sched.desired.Detach,
+		// Schedule configuration (mirrors DesiredState; empty => default).
+		ExecTimeout:            sched.desired.ExecTimeout,
+		Precondition:           sched.desired.Precondition,
+		PreconditionBackoff:    sched.desired.PreconditionBackoff,
+		PreconditionMaxElapsed: sched.desired.PreconditionMaxElapsed,
+	}
+
+	// Live precondition-backoff state. When deferred (summary.Deferred set by
+	// buildSummary iff PreconditionFirstDeferredAt != nil), the current
+	// NextFireAt is the pending retry instant — surface it as PreconditionRetryAt
+	// alongside the attempt count so an operator can tell the schedule is
+	// waiting on a precondition rather than idle until its natural slot.
+	if summary.Deferred {
+		result.PreconditionDeferred = true
+		result.PreconditionAttempts = sched.runtime.PreconditionAttempts
+		if !sched.runtime.NextFireAt.IsZero() {
+			result.PreconditionRetryAt = sched.runtime.NextFireAt.UTC().Format(time.RFC3339)
+		}
 	}
 
 	return result, nil
@@ -1158,6 +1176,12 @@ func buildSummary(sched *activeSchedule) model.ScheduleSummary {
 	}
 
 	summary.LastExitCode = sched.runtime.LastExitCode
+
+	// A schedule is "deferred" iff it has an active precondition-backoff
+	// sequence — i.e. its precondition failed at least once for the current
+	// pending fire and a retry is pending. PreconditionFirstDeferredAt is the
+	// authoritative anchor for that sequence (nil between fires).
+	summary.Deferred = sched.runtime.PreconditionFirstDeferredAt != nil
 
 	return summary
 }

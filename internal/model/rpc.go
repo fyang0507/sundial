@@ -65,9 +65,9 @@ type AddParams struct {
 	Name           string      `json:"name,omitempty"`
 	UserRequest    string      `json:"user_request,omitempty"`
 	Force          bool        `json:"force,omitempty"`
-	Refresh        bool        `json:"refresh,omitempty"` // update existing schedule in place if name matches
-	Once           bool        `json:"once,omitempty"`    // fire once then complete
-	Detach         bool        `json:"detach,omitempty"`  // fire-and-forget: spawn without waiting for exit
+	Refresh        bool        `json:"refresh,omitempty"`      // update existing schedule in place if name matches
+	Once           bool        `json:"once,omitempty"`         // fire once then complete
+	Detach         bool        `json:"detach,omitempty"`       // fire-and-forget: spawn without waiting for exit
 	ExecTimeout    string      `json:"exec_timeout,omitempty"` // per-command wall-clock timeout (Go duration); empty = unbounded
 	// Precondition is a readiness-gate shell command run before every fire; exit
 	// 0 = proceed, non-zero = defer-and-retry with backoff. Empty = no gate.
@@ -84,8 +84,8 @@ type AddParams struct {
 type AddResult struct {
 	ID          string `json:"id"`
 	Name        string `json:"name"`
-	Schedule    string `json:"schedule"`     // human-readable trigger description
-	NextFire    string `json:"next_fire"`    // display-formatted next fire time
+	Schedule    string `json:"schedule"`      // human-readable trigger description
+	NextFire    string `json:"next_fire"`     // display-formatted next fire time
 	NextFireUTC string `json:"next_fire_utc"` // ISO 8601 UTC for machine parsing
 	Status      string `json:"status"`
 	SavedTo     string `json:"saved_to"`  // data repo file path
@@ -131,13 +131,20 @@ type ScheduleSummary struct {
 	ID           string     `json:"id"`
 	Name         string     `json:"name"`
 	Schedule     string     `json:"schedule"`      // human-readable trigger description
-	NextFire     string     `json:"next_fire"`      // display-formatted
-	NextFireUTC  string     `json:"next_fire_utc"`  // ISO 8601 UTC
+	NextFire     string     `json:"next_fire"`     // display-formatted
+	NextFireUTC  string     `json:"next_fire_utc"` // ISO 8601 UTC
 	LastFire     string     `json:"last_fire,omitempty"`
 	LastExitCode *int       `json:"last_exit_code,omitempty"`
 	Status       string     `json:"status"`
 	MissedCount  int        `json:"missed_count,omitempty"`
 	MissedSince  *time.Time `json:"missed_since,omitempty"`
+	// Deferred is true when the schedule is currently held back in
+	// precondition backoff: its precondition exited non-zero on the last
+	// attempt and the daemon is waiting to retry. While deferred, NextFire
+	// is the retry instant rather than the trigger's natural slot, so list
+	// surfaces a compact "[deferred]" tag to distinguish a schedule waiting
+	// on a precondition from one that is genuinely idle until its next fire.
+	Deferred bool `json:"deferred,omitempty"`
 }
 
 // ListResult is returned by a successful "list" RPC.
@@ -158,6 +165,37 @@ type ShowResult struct {
 	CreatedAt         string `json:"created_at"`
 	RecreationCommand string `json:"recreation_command,omitempty"`
 	Detach            bool   `json:"detach,omitempty"`
+
+	// --- schedule configuration (mirrors DesiredState; empty => default) ---
+
+	// ExecTimeout is the per-command wall-clock timeout (Go duration). Empty
+	// means unbounded — the daemon waits indefinitely for the command to exit.
+	ExecTimeout string `json:"exec_timeout,omitempty"`
+	// Precondition is the readiness-gate shell command run before every fire
+	// (exit 0 => proceed, non-zero => defer-and-retry). Empty means no gate.
+	Precondition string `json:"precondition,omitempty"`
+	// PreconditionBackoff is the per-schedule override of the backoff schedule
+	// (Go durations). Empty means the daemon default applies.
+	PreconditionBackoff []string `json:"precondition_backoff,omitempty"`
+	// PreconditionMaxElapsed is the per-schedule override of the give-up budget
+	// (Go duration). Empty means the default termination bound applies.
+	PreconditionMaxElapsed string `json:"precondition_max_elapsed,omitempty"`
+
+	// --- live precondition-backoff state (from RuntimeState) ---
+
+	// PreconditionDeferred is true when the schedule is currently held back in
+	// precondition backoff (its precondition failed and a retry is pending).
+	// This is the complement to the "deferred" run-log entry type: the log
+	// records past deferrals, this reports the live waiting state. It mirrors
+	// ScheduleSummary.Deferred and is set iff PreconditionFirstDeferredAt != nil.
+	PreconditionDeferred bool `json:"precondition_deferred,omitempty"`
+	// PreconditionAttempts is the number of consecutive precondition deferrals
+	// for the current pending fire (the backoff-schedule index). Zero unless
+	// currently deferred.
+	PreconditionAttempts int `json:"precondition_attempts,omitempty"`
+	// PreconditionRetryAt is the RFC3339 UTC timestamp of the pending retry —
+	// the current NextFireAt while deferred. Empty unless currently deferred.
+	PreconditionRetryAt string `json:"precondition_retry_at,omitempty"`
 }
 
 // ReloadResult is returned by a successful "reload" RPC.
