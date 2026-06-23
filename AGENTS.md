@@ -9,7 +9,7 @@ make build                    # build binary
 make install                  # build and install to PATH
 make start                    # build, install, scaffold the data repo, start the daemon,
                               # and register with launchd for auto-start on login
-                              # (data repo comes from sundial.config.dev.yaml in this repo)
+                              # (data_repo_path comes from sundial.config.yaml in this repo)
 make stop                     # stop the daemon
 make restart                  # stop + start
 make test                     # run all tests
@@ -26,9 +26,9 @@ Sundial requires a running daemon. If `sundial health` shows the daemon is not r
 make start
 ```
 
-This builds the binary, installs it, resolves the data repo from `sundial.config.dev.yaml` (copy `sundial.config.dev.yaml.example` if you haven't already), scaffolds the data repo via `sundial setup` (workspace marker, `<data_repo>/sundial/config.yaml`, skills sync), starts the daemon, registers it with launchd, and runs a health check. The installed plist wraps the daemon with `caffeinate -i` so it holds a `PreventUserIdleSystemSleep` assertion for its lifetime — otherwise launchd suspends the job with the system and fires are missed. Explicit user-initiated sleep still works. `caffeinate -i` only blocks idle sleep while the daemon runs; it cannot *wake* a Mac that has already slept. For that there is an opt-in `pmset` wake integration (`daemon.wake.enabled`, off by default) implemented in `internal/power` and wired through `internal/daemon/wake.go`: when enabled the daemon manages one `pmset wakeorpoweron` event for the soonest fire, `lead_time` before it, via `sudo -n` (needs a NOPASSWD sudoers rule it prints in `sundial health`/setup.md, never edits silently). Absent permission/pmset, it disables gracefully and surfaces the state in health.
+This builds the binary, installs it, reads `data_repo_path` from `sundial.config.yaml` (copy `sundial.config.yaml.example` if you haven't already), bakes the absolute path of that config into the launchd plist as `sundial daemon --config <abspath>`, scaffolds the data repo via `sundial setup` (workspace marker, skills sync), starts the daemon, registers it with launchd, and runs a health check. `sundial.config.yaml` is the single config file: it lives in this repo (never the data repo) and holds `data_repo_path` plus the full `daemon:`/`state:` options blocks. The installed plist wraps the daemon with `caffeinate -i` so it holds a `PreventUserIdleSystemSleep` assertion for its lifetime — otherwise launchd suspends the job with the system and fires are missed. Explicit user-initiated sleep still works. `caffeinate -i` only blocks idle sleep while the daemon runs; it cannot *wake* a Mac that has already slept. For that there is an opt-in `pmset` wake integration (`daemon.wake.enabled`, off by default) implemented in `internal/power` and wired through `internal/daemon/wake.go`: when enabled the daemon manages one `pmset wakeorpoweron` event for the soonest fire, `lead_time` before it, via `sudo -n` (needs a NOPASSWD sudoers rule it prints in `sundial health`/setup.md, never edits silently). Absent permission/pmset, it disables gracefully and surfaces the state in health.
 
-The data repo is resolved in this order: `SUNDIAL_DATA_REPO` env var → `sundial.config.dev.yaml` next to the binary → walk up from cwd for `.agents/workspace.yaml`.
+The config file is located in this order: `--config <abspath>` flag → `SUNDIAL_CONFIG` env var → `./sundial.config.yaml` in cwd → `sundial.config.yaml` next to the binary. `data_repo_path` is read from that file; the `SUNDIAL_DATA_REPO` env var and `--data-repo` flag override it. (The walk-up to `.agents/workspace.yaml` remains the last-resort fallback when no config file resolves a data repo.)
 
 CLI commands (`sundial add`, `sundial list`, etc.) connect to the daemon over a well-known socket path and do not need a config file.
 

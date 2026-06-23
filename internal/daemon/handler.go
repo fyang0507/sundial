@@ -688,13 +688,9 @@ func (d *Daemon) handleHealth() (*model.HealthResult, *model.RPCError) {
 	scheduleCount := len(d.schedules)
 	d.mu.RUnlock()
 
-	configPath := ""
-	if d.cfg.DataRepo != "" {
-		candidate := filepath.Join(d.cfg.DataRepo, "sundial", "config.yaml")
-		if _, err := os.Stat(candidate); err == nil {
-			configPath = candidate
-		}
-	}
+	// The config file the daemon was started with (--config). Single source of
+	// truth for both data_repo_path and daemon/state options.
+	configPath := d.cfg.ConfigPath
 
 	// Probe pmset wake management ONLY when the operator opted in. The probes fork
 	// subprocesses (pmset -g, and sudo -n for the permission check); running them

@@ -6,7 +6,6 @@ import (
 
 	"github.com/fyang0507/sundial/internal/config"
 	"github.com/fyang0507/sundial/internal/daemon"
-	"github.com/fyang0507/sundial/internal/model"
 	"github.com/spf13/cobra"
 )
 
@@ -17,23 +16,22 @@ var daemonCmd = &cobra.Command{
 	Run:   runDaemon,
 }
 
-var daemonDataRepoFlag string
+var (
+	daemonConfigFlag   string
+	daemonDataRepoFlag string
+)
 
 func init() {
 	rootCmd.AddCommand(daemonCmd)
 
-	daemonCmd.Flags().StringVar(&daemonDataRepoFlag, "data-repo", "", "path to the data repo (overrides SUNDIAL_DATA_REPO and walk-up)")
+	daemonCmd.Flags().StringVar(&daemonConfigFlag, "config", "", "path to sundial.config.yaml (overrides SUNDIAL_CONFIG env)")
+	daemonCmd.Flags().StringVar(&daemonDataRepoFlag, "data-repo", "", "path to the data repo (overrides data_repo_path in the config file)")
 }
 
 func runDaemon(cmd *cobra.Command, args []string) {
-	// Resolve: explicit --data-repo wins, otherwise the standard resolver.
-	var cfg *model.Config
-	var err error
-	if daemonDataRepoFlag != "" {
-		cfg, _, err = config.LoadForDataRepo(daemonDataRepoFlag)
-	} else {
-		cfg, _, err = config.LoadAndResolve()
-	}
+	// Locate and load the single config file (--config / SUNDIAL_CONFIG / cwd /
+	// next to binary), then apply the --data-repo / SUNDIAL_DATA_REPO override.
+	cfg, _, err := config.LoadAndResolve(daemonConfigFlag, daemonDataRepoFlag)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %s\n", err)
 		os.Exit(1)

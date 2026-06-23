@@ -4,15 +4,16 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/fyang0507/sundial/internal/model"
 )
 
-// writeConfig writes a YAML string to path/config.yaml and returns the full path.
+// writeConfig writes a YAML string to dir/sundial.config.yaml and returns the path.
 func writeConfig(t *testing.T, dir, content string) string {
 	t.Helper()
-	p := filepath.Join(dir, "config.yaml")
+	p := filepath.Join(dir, ConfigFilename)
 	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
 		t.Fatalf("writing config: %v", err)
 	}
@@ -29,23 +30,35 @@ func makeGitRepo(t *testing.T, dir string) string {
 	return repo
 }
 
-func TestLoad_AllFieldsSet(t *testing.T) {
+func TestLoadConfigFile_AllFieldsSet(t *testing.T) {
 	tmp := t.TempDir()
 
-	yaml := `daemon:
+	yaml := `data_repo_path: /tmp/data-repo
+daemon:
   log_level: debug
   log_file: /tmp/test.log
+  wake:
+    enabled: true
+    lead_time: 5m
 state:
   path: /tmp/state/
   logs_path: /tmp/logs/
 `
 	cfgPath := writeConfig(t, tmp, yaml)
 
-	cfg, err := Load(cfgPath)
+	cfg, err := LoadConfigFile(cfgPath, "")
 	if err != nil {
-		t.Fatalf("Load() error: %v", err)
+		t.Fatalf("LoadConfigFile() error: %v", err)
 	}
 
+	if cfg.DataRepo != "/tmp/data-repo" {
+		t.Errorf("DataRepo = %q, want /tmp/data-repo", cfg.DataRepo)
+	}
+	// ConfigPath is the absolute path of the file we loaded.
+	wantAbs, _ := filepath.Abs(cfgPath)
+	if cfg.ConfigPath != wantAbs {
+		t.Errorf("ConfigPath = %q, want %q", cfg.ConfigPath, wantAbs)
+	}
 	// socket_path is not a user-configurable field; the expanded default always applies.
 	home, _ := os.UserHomeDir()
 	wantSocket := filepath.Join(home, "Library/Application Support/sundial/sundial.sock")
@@ -58,6 +71,12 @@ state:
 	if cfg.Daemon.LogFile != "/tmp/test.log" {
 		t.Errorf("LogFile = %q, want /tmp/test.log", cfg.Daemon.LogFile)
 	}
+	if !cfg.Daemon.Wake.Enabled {
+		t.Error("Wake.Enabled = false, want true")
+	}
+	if cfg.Daemon.Wake.LeadTime != "5m" {
+		t.Errorf("Wake.LeadTime = %q, want 5m", cfg.Daemon.Wake.LeadTime)
+	}
 	if cfg.State.Path != "/tmp/state/" {
 		t.Errorf("State.Path = %q, want /tmp/state/", cfg.State.Path)
 	}
@@ -66,18 +85,22 @@ state:
 	}
 }
 
-func TestLoad_MinimalConfig_DefaultsApplied(t *testing.T) {
+func TestLoadConfigFile_MinimalConfig_DefaultsApplied(t *testing.T) {
 	tmp := t.TempDir()
 
-	cfgPath := writeConfig(t, tmp, "")
+	cfgPath := writeConfig(t, tmp, "data_repo_path: ~/some-repo\n")
 
-	cfg, err := Load(cfgPath)
+	cfg, err := LoadConfigFile(cfgPath, "")
 	if err != nil {
-		t.Fatalf("Load() error: %v", err)
+		t.Fatalf("LoadConfigFile() error: %v", err)
 	}
 
-	// Defaults should be applied and ~ expanded.
 	home, _ := os.UserHomeDir()
+
+	// data_repo_path is tilde-expanded.
+	if cfg.DataRepo != filepath.Join(home, "some-repo") {
+		t.Errorf("DataRepo = %q, want %q", cfg.DataRepo, filepath.Join(home, "some-repo"))
+	}
 
 	wantSocket := filepath.Join(home, "Library/Application Support/sundial/sundial.sock")
 	if cfg.Daemon.SocketPath != wantSocket {
@@ -113,13 +136,201 @@ func TestLoad_MinimalConfig_DefaultsApplied(t *testing.T) {
 	if cfg.Daemon.MissGracePeriod != model.DefaultMissGracePeriod {
 		t.Errorf("MissGracePeriod = %q, want %q", cfg.Daemon.MissGracePeriod, model.DefaultMissGracePeriod)
 	}
-	// Wake management is off by default; lead_time defaults to "3m". A config with
-	// no `wake:` block must load with these values (backward compatibility).
+	// Wake management is off by default; lead_time defaults to "3m".
 	if cfg.Daemon.Wake.Enabled {
 		t.Error("Wake.Enabled = true, want false by default")
 	}
 	if cfg.Daemon.Wake.LeadTime != model.DefaultWakeLeadTime {
 		t.Errorf("Wake.LeadTime = %q, want %q", cfg.Daemon.Wake.LeadTime, model.DefaultWakeLeadTime)
+	}
+}
+
+func TestLoadConfigFile_DataRepoOverride(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := writeConfig(t, tmp, "data_repo_path: /from/file\n")
+
+	cfg, err := LoadConfigFile(cfgPath, "/override/repo")
+	if err != nil {
+		t.Fatalf("LoadConfigFile() error: %v", err)
+	}
+	if cfg.DataRepo != "/override/repo" {
+		t.Errorf("DataRepo = %q, want /override/repo (override wins)", cfg.DataRepo)
+	}
+}
+
+// Strict decoding: an unknown top-level field is a hard error naming the field.
+func TestLoadConfigFile_UnknownField(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := writeConfig(t, tmp, "data_repo_path: /x\nunknown_field: true\n")
+
+	_, err := LoadConfigFile(cfgPath, "")
+	if err == nil {
+		t.Fatal("expected error for unknown field, got nil")
+	}
+	if !strings.Contains(err.Error(), "unknown_field") {
+		t.Errorf("error %q does not name the offending field 'unknown_field'", err)
+	}
+}
+
+// Strict decoding: a typo inside the daemon block is a hard error.
+func TestLoadConfigFile_TypoInDaemonField(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := writeConfig(t, tmp, "data_repo_path: /x\ndaemon:\n  log_lvl: debug\n")
+
+	_, err := LoadConfigFile(cfgPath, "")
+	if err == nil {
+		t.Fatal("expected error for typo'd daemon field, got nil")
+	}
+	if !strings.Contains(err.Error(), "log_lvl") {
+		t.Errorf("error %q does not name the offending field 'log_lvl'", err)
+	}
+}
+
+// Strict decoding: a dotted key (instead of nesting) is rejected.
+func TestLoadConfigFile_DottedKeyRejected(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := writeConfig(t, tmp, "data_repo_path: /x\ndaemon.wake.enabled: true\n")
+
+	_, err := LoadConfigFile(cfgPath, "")
+	if err == nil {
+		t.Fatal("expected error for dotted key, got nil")
+	}
+}
+
+func TestLoadAndResolve_ConfigFlag(t *testing.T) {
+	tmp := t.TempDir()
+	repo := makeGitRepo(t, tmp)
+	cfgPath := writeConfig(t, tmp, "data_repo_path: "+repo+"\ndaemon:\n  log_level: warn\n")
+
+	cfg, gotPath, err := LoadAndResolve(cfgPath, "")
+	if err != nil {
+		t.Fatalf("LoadAndResolve() error: %v", err)
+	}
+	wantAbs, _ := filepath.Abs(cfgPath)
+	if gotPath != wantAbs {
+		t.Errorf("config path = %q, want %q", gotPath, wantAbs)
+	}
+	if cfg.DataRepo != repo {
+		t.Errorf("DataRepo = %q, want %q", cfg.DataRepo, repo)
+	}
+	if cfg.Daemon.LogLevel != "warn" {
+		t.Errorf("LogLevel = %q, want warn", cfg.Daemon.LogLevel)
+	}
+}
+
+func TestLoadAndResolve_DataRepoFlagOverridesFile(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := writeConfig(t, tmp, "data_repo_path: /from/file\n")
+
+	cfg, _, err := LoadAndResolve(cfgPath, "/flag/repo")
+	if err != nil {
+		t.Fatalf("LoadAndResolve() error: %v", err)
+	}
+	if cfg.DataRepo != "/flag/repo" {
+		t.Errorf("DataRepo = %q, want /flag/repo (flag wins)", cfg.DataRepo)
+	}
+}
+
+func TestLoadAndResolve_SundialDataRepoEnvOverridesFile(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := writeConfig(t, tmp, "data_repo_path: /from/file\n")
+	t.Setenv("SUNDIAL_DATA_REPO", "/from/env")
+	t.Setenv("SUNDIAL_CONFIG", "")
+
+	cfg, _, err := LoadAndResolve(cfgPath, "")
+	if err != nil {
+		t.Fatalf("LoadAndResolve() error: %v", err)
+	}
+	if cfg.DataRepo != "/from/env" {
+		t.Errorf("DataRepo = %q, want /from/env (env override)", cfg.DataRepo)
+	}
+}
+
+func TestLoadAndResolve_SundialConfigEnv(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := writeConfig(t, tmp, "data_repo_path: /env/repo\n")
+	t.Setenv("SUNDIAL_CONFIG", cfgPath)
+	t.Setenv("SUNDIAL_DATA_REPO", "")
+
+	cfg, gotPath, err := LoadAndResolve("", "")
+	if err != nil {
+		t.Fatalf("LoadAndResolve() error: %v", err)
+	}
+	wantAbs, _ := filepath.Abs(cfgPath)
+	if gotPath != wantAbs {
+		t.Errorf("config path = %q, want %q", gotPath, wantAbs)
+	}
+	if cfg.DataRepo != "/env/repo" {
+		t.Errorf("DataRepo = %q, want /env/repo", cfg.DataRepo)
+	}
+}
+
+func TestLoadAndResolve_CwdFallback(t *testing.T) {
+	tmp := t.TempDir()
+	writeConfig(t, tmp, "data_repo_path: /cwd/repo\n")
+	t.Setenv("SUNDIAL_CONFIG", "")
+	t.Setenv("SUNDIAL_DATA_REPO", "")
+
+	prev, _ := os.Getwd()
+	defer os.Chdir(prev)
+	if err := os.Chdir(tmp); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+
+	cfg, _, err := LoadAndResolve("", "")
+	if err != nil {
+		t.Fatalf("LoadAndResolve() error: %v", err)
+	}
+	if cfg.DataRepo != "/cwd/repo" {
+		t.Errorf("DataRepo = %q, want /cwd/repo", cfg.DataRepo)
+	}
+}
+
+func TestLoadAndResolve_NotResolved(t *testing.T) {
+	t.Setenv("SUNDIAL_CONFIG", "")
+	t.Setenv("SUNDIAL_DATA_REPO", "")
+
+	// cd into an empty temp dir with no sundial.config.yaml.
+	dir := t.TempDir()
+	prev, _ := os.Getwd()
+	defer os.Chdir(prev)
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+
+	_, _, err := LoadAndResolve("", "")
+	if err == nil {
+		t.Fatal("expected error when no config file can be located")
+	}
+	if !errors.Is(err, model.ErrConfigNotResolved) {
+		t.Errorf("error = %v, want ErrConfigNotResolved", err)
+	}
+	if !IsResolveError(err) {
+		t.Error("IsResolveError() = false, want true")
+	}
+}
+
+func TestReadDataRepoPath(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := writeConfig(t, tmp, "data_repo_path: ~/repo-x\n")
+
+	got, err := ReadDataRepoPath(cfgPath)
+	if err != nil {
+		t.Fatalf("ReadDataRepoPath() error: %v", err)
+	}
+	home, _ := os.UserHomeDir()
+	if got != filepath.Join(home, "repo-x") {
+		t.Errorf("ReadDataRepoPath() = %q, want %q", got, filepath.Join(home, "repo-x"))
+	}
+}
+
+func TestReadDataRepoPath_Missing(t *testing.T) {
+	tmp := t.TempDir()
+	cfgPath := writeConfig(t, tmp, "daemon:\n  log_level: info\n")
+
+	_, err := ReadDataRepoPath(cfgPath)
+	if err == nil {
+		t.Fatal("expected error for config with no data_repo_path")
 	}
 }
 
@@ -147,7 +358,6 @@ func TestValidate_NonexistentPath(t *testing.T) {
 
 func TestValidate_PathExistsButNoGit(t *testing.T) {
 	tmp := t.TempDir()
-	// Directory exists but has no .git
 	cfg := &model.Config{DataRepo: tmp}
 	err := Validate(cfg)
 	if err == nil {
@@ -199,31 +409,11 @@ func TestExpandPath(t *testing.T) {
 		in   string
 		want string
 	}{
-		{
-			name: "tilde prefix",
-			in:   "~/foo",
-			want: filepath.Join(home, "foo"),
-		},
-		{
-			name: "absolute path unchanged",
-			in:   "/absolute/path",
-			want: "/absolute/path",
-		},
-		{
-			name: "empty string",
-			in:   "",
-			want: "",
-		},
-		{
-			name: "bare tilde",
-			in:   "~",
-			want: home,
-		},
-		{
-			name: "no tilde prefix",
-			in:   "relative/path",
-			want: "relative/path",
-		},
+		{name: "tilde prefix", in: "~/foo", want: filepath.Join(home, "foo")},
+		{name: "absolute path unchanged", in: "/absolute/path", want: "/absolute/path"},
+		{name: "empty string", in: "", want: ""},
+		{name: "bare tilde", in: "~", want: home},
+		{name: "no tilde prefix", in: "relative/path", want: "relative/path"},
 	}
 
 	for _, tt := range tests {
@@ -233,128 +423,5 @@ func TestExpandPath(t *testing.T) {
 				t.Errorf("ExpandPath(%q) = %q, want %q", tt.in, got, tt.want)
 			}
 		})
-	}
-}
-
-func TestResolveDataRepo_EnvVar(t *testing.T) {
-	tmp := t.TempDir()
-	t.Setenv("SUNDIAL_DATA_REPO", tmp)
-
-	got, err := ResolveDataRepo()
-	if err != nil {
-		t.Fatalf("ResolveDataRepo() error: %v", err)
-	}
-	if got.DataRepo != tmp {
-		t.Errorf("DataRepo = %q, want %q", got.DataRepo, tmp)
-	}
-	if got.Source != ResolveSourceEnv {
-		t.Errorf("Source = %q, want %q", got.Source, ResolveSourceEnv)
-	}
-}
-
-func TestResolveDataRepo_WorkspaceWalkUp(t *testing.T) {
-	t.Setenv("SUNDIAL_DATA_REPO", "")
-
-	// Create a fake data repo with .agents/workspace.yaml.
-	root := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(root, ".agents"), 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(root, ".agents/workspace.yaml"), []byte("version: 1\n"), 0o644); err != nil {
-		t.Fatalf("write marker: %v", err)
-	}
-
-	// cd into a subdirectory of the data repo.
-	sub := filepath.Join(root, "sub", "deeper")
-	if err := os.MkdirAll(sub, 0o755); err != nil {
-		t.Fatalf("mkdir sub: %v", err)
-	}
-	prev, _ := os.Getwd()
-	defer os.Chdir(prev)
-	if err := os.Chdir(sub); err != nil {
-		t.Fatalf("chdir: %v", err)
-	}
-
-	got, err := ResolveDataRepo()
-	if err != nil {
-		t.Fatalf("ResolveDataRepo() error: %v", err)
-	}
-	// Resolve symlinks (macOS temp dirs are usually under /private/var/...).
-	wantReal, _ := filepath.EvalSymlinks(root)
-	gotReal, _ := filepath.EvalSymlinks(got.DataRepo)
-	if gotReal != wantReal {
-		t.Errorf("DataRepo = %q, want %q", gotReal, wantReal)
-	}
-	if got.Source != ResolveSourceWorkspace {
-		t.Errorf("Source = %q, want %q", got.Source, ResolveSourceWorkspace)
-	}
-}
-
-func TestResolveDataRepo_NotResolved(t *testing.T) {
-	t.Setenv("SUNDIAL_DATA_REPO", "")
-
-	// cd into a temp dir that has no .agents/workspace.yaml anywhere up the chain.
-	// On macOS, `os.TempDir()` is under /var/folders/...; we can't guarantee the
-	// whole chain is marker-free. Instead, move cwd to $TMPDIR itself and hope.
-	// This test is best-effort; skip if a marker is detected higher up.
-	dir := t.TempDir()
-	prev, _ := os.Getwd()
-	defer os.Chdir(prev)
-	if err := os.Chdir(dir); err != nil {
-		t.Fatalf("chdir: %v", err)
-	}
-
-	if _, ok := walkUpForWorkspace(); ok {
-		t.Skip("environment has a workspace.yaml above the temp dir; skipping")
-	}
-
-	_, err := ResolveDataRepo()
-	if !errors.Is(err, model.ErrDataRepoNotResolved) {
-		t.Errorf("ResolveDataRepo() error = %v, want ErrDataRepoNotResolved", err)
-	}
-}
-
-func TestLoadForDataRepo_MissingFileUsesDefaults(t *testing.T) {
-	tmp := t.TempDir()
-	repo := makeGitRepo(t, tmp)
-
-	cfg, cfgPath, err := LoadForDataRepo(repo)
-	if err != nil {
-		t.Fatalf("LoadForDataRepo() error: %v", err)
-	}
-	if cfg.DataRepo != repo {
-		t.Errorf("DataRepo = %q, want %q", cfg.DataRepo, repo)
-	}
-	if cfgPath != "" {
-		t.Errorf("cfgPath = %q, want empty (file absent)", cfgPath)
-	}
-	if cfg.Daemon.LogLevel != "info" {
-		t.Errorf("LogLevel = %q, want info (default)", cfg.Daemon.LogLevel)
-	}
-}
-
-func TestLoadForDataRepo_WithFileOverridesDefaults(t *testing.T) {
-	tmp := t.TempDir()
-	repo := makeGitRepo(t, tmp)
-
-	cfgDir := filepath.Join(repo, "sundial")
-	if err := os.MkdirAll(cfgDir, 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	body := "daemon:\n  log_level: debug\n"
-	cfgPath := filepath.Join(cfgDir, "config.yaml")
-	if err := os.WriteFile(cfgPath, []byte(body), 0o644); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-
-	cfg, got, err := LoadForDataRepo(repo)
-	if err != nil {
-		t.Fatalf("LoadForDataRepo() error: %v", err)
-	}
-	if cfg.Daemon.LogLevel != "debug" {
-		t.Errorf("LogLevel = %q, want debug", cfg.Daemon.LogLevel)
-	}
-	if got != cfgPath {
-		t.Errorf("resolved path = %q, want %q", got, cfgPath)
 	}
 }

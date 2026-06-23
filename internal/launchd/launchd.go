@@ -18,10 +18,16 @@ const PlistDir = "~/Library/LaunchAgents"
 
 // PlistConfig holds all values needed to render a launchd plist.
 type PlistConfig struct {
-	Label        string
-	BinaryPath   string
-	LogPath      string
+	Label      string
+	BinaryPath string
+	LogPath    string
+	// DataRepoPath is the resolved data repo; used only for WorkingDirectory.
+	// The daemon learns the data repo from data_repo_path in the config file.
 	DataRepoPath string
+	// ConfigFilePath is the absolute path to sundial.config.yaml, baked into
+	// ProgramArguments as `--config <abspath>` so the launchd-started daemon
+	// reads the same single config file.
+	ConfigFilePath string
 }
 
 // CommandRunner abstracts command execution so tests can provide a mock.
@@ -57,8 +63,8 @@ const plistTemplate = `<?xml version="1.0" encoding="UTF-8"?>
         <string>-i</string>
         <string>{{.BinaryPath}}</string>
         <string>daemon</string>
-        <string>--data-repo</string>
-        <string>{{.DataRepoPath}}</string>
+        <string>--config</string>
+        <string>{{.ConfigFilePath}}</string>
     </array>
     <key>RunAtLoad</key>
     <true/>

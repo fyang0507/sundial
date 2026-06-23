@@ -12,6 +12,7 @@ var (
 	ErrConfigInvalid         = errors.New("config.yaml is invalid")
 	ErrDataRepoInvalid       = errors.New("data_repo path is invalid or not a git repository")
 	ErrDataRepoNotResolved   = errors.New("data repo could not be resolved")
+	ErrConfigNotResolved     = errors.New("config file could not be located")
 	ErrScheduleNotFound      = errors.New("schedule not found")
 	ErrDuplicateSchedule     = errors.New("duplicate schedule exists")
 	ErrGitPreconditionFailed = errors.New("data repo git precondition failed")

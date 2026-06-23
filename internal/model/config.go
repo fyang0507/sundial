@@ -36,14 +36,21 @@ const (
 // DesiredState.PreconditionBackoff.
 var DefaultPreconditionBackoff = []string{"1m", "5m", "30m", "1h", "2h"}
 
-// Config represents the daemon configuration loaded from
-// <data_repo>/sundial/config.yaml. DataRepo is injected at load time from
-// the resolver (SUNDIAL_DATA_REPO / sundial.config.dev.yaml / workspace.yaml
-// walk-up) — it is not a field in the on-disk schema.
+// Config represents the entire sundial configuration loaded from a single
+// config file (sundial.config.yaml) that lives in the sundial source repo.
+// The file holds everything: the top-level data_repo_path plus the daemon and
+// state option blocks. The daemon reads it at startup via the --config flag.
+//
+// DataRepo is the in-memory data-repo path; it is populated from the on-disk
+// data_repo_path field (and may be overridden by --data-repo / SUNDIAL_DATA_REPO).
+// ConfigPath is the absolute path of the config file the daemon was loaded
+// from; it is not part of the on-disk schema (yaml:"-") — it is set by the
+// loader so the daemon can report it in `sundial health`.
 type Config struct {
-	DataRepo string       `yaml:"-"`
-	Daemon   DaemonConfig `yaml:"daemon"`
-	State    StateConfig  `yaml:"state"`
+	DataRepo   string       `yaml:"data_repo_path"`
+	ConfigPath string       `yaml:"-"`
+	Daemon     DaemonConfig `yaml:"daemon"`
+	State      StateConfig  `yaml:"state"`
 }
 
 // DaemonConfig holds daemon-specific settings.

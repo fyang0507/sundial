@@ -79,7 +79,7 @@ Use `--detach` only when the callback logs its outcome elsewhere or re-enters su
 
 ### Backoff and termination
 
-- **Default backoff**: `1m, 5m, 30m, 1h, 2h`. The Nth deferral waits the Nth entry; the **last entry repeats as the cap**. Override the daemon-wide default via `daemon.precondition_backoff` in `<data_repo>/sundial/config.yaml`.
+- **Default backoff**: `1m, 5m, 30m, 1h, 2h`. The Nth deferral waits the Nth entry; the **last entry repeats as the cap**. Override the daemon-wide default via `daemon.precondition_backoff` in `<sundial-repo>/sundial.config.yaml`.
 - **Default termination** is bounded by the **next regular fire**: the daemon keeps retrying until the precondition passes *or* the next backoff retry would land at/after the schedule's next regular fire. At that point it gives up, logs a miss (`reason: "precondition not met"`), resets the backoff, and advances to the next regular fire. For a one-off `at` (no next regular fire), the deadline is the first deferral plus a max-elapsed budget (default `2h`, configurable via `daemon.precondition_max_elapsed`); on expiry the `at` schedule completes with reason `missed`.
 - **Per-schedule overrides**:
   - `--precondition-backoff "1m,5m,30m,1h,2h"` — comma-separated Go durations; replaces the schedule's backoff (each entry validated at add time).
@@ -142,11 +142,10 @@ Sundial, your tool, and any other agent tooling in the same stack share one git 
     workspace.yaml        # shared across tools; sundial registers under tools.sundial
     skills/sundial/       # this skill tree (SKILL.md + child docs)
   sundial/
-    config.yaml           # daemon options (optional; defaults apply)
     schedules/            # one JSON per schedule — the definition only
 ```
 
-Runtime state (`~/.config/sundial/state/`) and run logs (`~/.config/sundial/logs/`) stay local to the machine — they are not part of the data repo. This split is deliberate: definitions are git-synced so they survive restarts and travel across machines; volatile runtime state stays local to keep git history clean.
+The data repo holds **only data** — schedules, the workspace marker, and synced skills. Daemon options are not stored here; they live in `<sundial-repo>/sundial.config.yaml`. Runtime state (`~/.config/sundial/state/`) and run logs (`~/.config/sundial/logs/`) stay local to the machine — they are not part of the data repo. This split is deliberate: definitions are git-synced so they survive restarts and travel across machines; volatile runtime state stays local to keep git history clean.
 
 Conventions to follow when adding your own tool to this shared layout:
 
