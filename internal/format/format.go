@@ -86,7 +86,14 @@ func FormatListResult(r *model.ListResult, jsonMode bool) string {
 	fmt.Fprintln(tw, "ID\tNAME\tSCHEDULE\tNEXT FIRE\tSTATUS")
 	for _, s := range r.Schedules {
 		schedule := truncate(s.Schedule, 30)
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", s.ID, s.Name, schedule, s.NextFire, s.Status)
+		status := s.Status
+		// Append a compact tag for a schedule currently held in precondition
+		// backoff, so list flags it at a glance without adding a column. The
+		// NEXT FIRE shown is the retry instant, not the natural slot.
+		if s.Deferred {
+			status += " [deferred]"
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", s.ID, s.Name, schedule, s.NextFire, status)
 	}
 	tw.Flush()
 	return strings.TrimRight(buf.String(), "\n")
@@ -124,6 +131,33 @@ func FormatShowResult(r *model.ShowResult, jsonMode bool) string {
 
 	kv(&b, "status", r.Status)
 	kv(&b, "command", r.Command)
+
+	// Schedule configuration: only emit lines for options the operator actually
+	// set, so a plain schedule stays terse. Backoff/max_elapsed are per-schedule
+	// overrides — surface them only when present (otherwise the daemon default
+	// applies, which is not schedule-specific).
+	if r.ExecTimeout != "" {
+		kv(&b, "exec_timeout", r.ExecTimeout)
+	}
+	if r.Precondition != "" {
+		kv(&b, "precondition", r.Precondition)
+		if len(r.PreconditionBackoff) > 0 {
+			kv(&b, "precondition_backoff", strings.Join(r.PreconditionBackoff, ", "))
+		}
+		if r.PreconditionMaxElapsed != "" {
+			kv(&b, "precondition_max_elapsed", r.PreconditionMaxElapsed)
+		}
+	}
+
+	// Live precondition-backoff state: a clear line so an operator can tell the
+	// schedule is waiting on a precondition (NextFire is the retry instant) rather
+	// than genuinely idle. Render the retry time in LOCAL time to match the
+	// wake/next-fire convention.
+	if r.PreconditionDeferred {
+		retry := localTime(r.PreconditionRetryAt)
+		kv(&b, "deferred", fmt.Sprintf("precondition not met (attempt %d, next retry %s)", r.PreconditionAttempts, retry))
+	}
+
 	return strings.TrimRight(b.String(), "\n")
 }
 
@@ -182,15 +216,22 @@ func FormatHealthResult(r *model.HealthResult, jsonMode bool) string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
-// localWakeTime renders an RFC3339 UTC timestamp in the host's local time, to
-// match `pmset -g sched` output. On a parse error it returns the input verbatim
-// so health never hides the raw value.
-func localWakeTime(rfc3339 string) string {
+// localTime renders an RFC3339 UTC timestamp in the host's local time. On a
+// parse error it returns the input verbatim so output never hides the raw value.
+// Shared by the wake (pmset) and precondition-deferral renderers so both present
+// machine timestamps in consistent local wall-clock time.
+func localTime(rfc3339 string) string {
 	t, err := time.Parse(time.RFC3339, rfc3339)
 	if err != nil {
 		return rfc3339
 	}
 	return t.Local().Format("2006-01-02 15:04:05 MST")
+}
+
+// localWakeTime renders an RFC3339 UTC timestamp in the host's local time, to
+// match `pmset -g sched` output (pmset lists events in local wall-clock time).
+func localWakeTime(rfc3339 string) string {
+	return localTime(rfc3339)
 }
 
 // FormatGeocodeResult formats geocode output as key:value pairs or JSON.

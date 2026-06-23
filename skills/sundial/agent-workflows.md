@@ -13,6 +13,8 @@ Sundial fires commands **unattended** — no human is present to approve a permi
 
 These flags are intentional and load-bearing here, not a careless shortcut: the interactive safety rails exist to keep a human in the loop, and a scheduler has no human in the loop. Keep the data repo and the host machine trusted accordingly.
 
+These are **third-party agent-CLI flags, not sundial flags** — sundial can't validate them or keep them in sync, and a wrong or stale flag silently breaks the scheduled session at fire time (an unattended run can't recover). Confirm the exact spelling and valid values against the agent CLI's own `--help` in your installed version before you write the `--command`.
+
 The headless invocations, with the preferred flags:
 
 **Codex** (default for scheduled runs; log plain output locally):

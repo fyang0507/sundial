@@ -28,6 +28,14 @@ Four triggers cover the scheduling repertoire. See [scheduling.md](scheduling.md
 
 Two cross-cutting flags apply to **any** trigger: `--exec-timeout` caps a command's wall-clock runtime (kills it if it hangs), and `--precondition` adds a readiness gate that defers-and-retries with exponential backoff when a check command exits non-zero (e.g. "only fire when the network is up"). See [scheduling.md](scheduling.md) for both.
 
+## How sundial models a schedule
+
+Three invariants worth internalizing before you schedule anything (full detail in [scheduling.md](scheduling.md)):
+
+- **Lifecycle.** active → paused (`pause`) → active (`unpause`); active → completed (a `--once` schedule, or a fired `at`) → auto-reactivates on a matching `add` (by name or command); active → removed. Paused and completed schedules **persist** — they're a `status` change, not a delete. See [Schedule lifecycle](scheduling.md#schedule-lifecycle).
+- **State is split.** Definitions are git-tracked in the data repo; runtime fields (next fire, last exit code, fire count, deferred-backoff state) are local. Query them with `sundial list`/`show` — never read the files.
+- **One daemon, one data repo**, fixed at `make start`. The CLI is directory-agnostic: `add`/`remove` from any working directory talk to that one daemon and write to its repo, not your current project.
+
 ## Scheduling your future self
 
 If you're an agent (or building a tool that wraps one) and want to invoke a fresh or resumed agent session — at an absolute time, on a recurring cadence, or when an external condition becomes true:

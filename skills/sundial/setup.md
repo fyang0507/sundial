@@ -56,7 +56,11 @@ It is **opt-in and system-wide** (one global toggle, not per-schedule). When ena
        lead_time: "3m"
    ```
 
-4. Verify: `sundial health` shows `wake: enabled (next wake ...)` (in local time, matching `pmset -g sched`), and `pmset -g sched` lists the `wakeorpoweron` event the daemon scheduled.
+4. Verify with `sundial health`. The `wake:` line reports one of four states, so don't assume anything but the first means failure:
+   - `enabled (next wake ...)` — working; the time is local, matching `pmset -g sched`, which also lists the `wakeorpoweron` event.
+   - `enabled (inactive: sudoers not configured)` — the NOPASSWD rule from step 1 is missing or wrong; health prints the exact `fix:` line to install. (This is what you'll see *before* step 2.)
+   - `enabled (inactive: pmset unavailable)` — `pmset` couldn't be run on this host.
+   - `enabled (no upcoming fire)` — wake is configured correctly but no active schedule is due yet, so there's nothing to wake for. Add a schedule and re-check.
 
 Disabling / tearing down: the daemon deliberately leaves its wake event in place when it stops (so a normal sleep/launchd-suspend still wakes the machine and relaunches the daemon). If you permanently disable wake (`enabled: false` + restart) or uninstall sundial without a later restart to reconcile, one already-scheduled `wakeorpoweron` event can linger and wake/power-on the machine once at the old time. Check with `pmset -g sched` and clear a stray event with `sudo pmset schedule cancel wakeorpoweron "<MM/dd/yy HH:mm:ss>"`.
 

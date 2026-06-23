@@ -20,6 +20,10 @@ You always talk to the daemon through the CLI — there is no Go library and no 
 
 Run `sundial <command> --help` for the flags and an example. `sundial health --json` returns the resolved `data_repo`, `config` path, daemon pid, and `pending_pushes`; if the daemon isn't reachable, launchd hasn't started it — run `make start` from the sundial repo (see [setup.md](setup.md)).
 
+## Schedule lifecycle
+
+A schedule moves through a small set of states: **active** → **paused** (via `sundial pause`) → **active** (`unpause`); **active** → **completed** (a `--once` schedule after it fires, or an `at` after its single fire) → auto-reactivates on a matching `add` (by name or command); **active** → **removed** (`sundial remove`). Completion and removal are recorded as a `status` change in the data-repo file — not a delete — and paused schedules persist with their definition intact. This is the canonical reference for the transitions mentioned elsewhere.
+
 ## Trigger behavior beyond `--help`
 
 **Solar** — resolve a street address into the `--lat`, `--lon`, and `--timezone` values you pass with `sundial geocode "<address>" --json`.
@@ -32,7 +36,7 @@ Run `sundial <command> --help` for the flags and an example. `sundial health --j
 2. Sundial sets `SUNDIAL_SCHEDULE_ID` and `SUNDIAL_LAST_FIRED_AT` (ISO 8601) in the trigger's environment on every invocation, so the check can scope itself without sundial knowing your domain. Sundial only ever observes the exit code.
 3. Minimum interval is 30s; timeouts are wall-clock (e.g. `72h`).
 
-Without `--once` a poll runs until its timeout; with it the schedule completes after the first successful fire. A completed schedule auto-reactivates if `sundial add` is called again with the same command. For a worked example that waits for a condition and then resumes a specific agent session, see [agent-workflows.md](agent-workflows.md).
+Without `--once` a poll runs until its timeout; with it the schedule completes after the first successful fire. A completed schedule auto-reactivates if `sundial add` is called again with a matching name or command (name is checked first) — so re-adding a one-off by its old name, even with different command text, revives the completed schedule rather than creating a new one. For a worked example that waits for a condition and then resumes a specific agent session, see [agent-workflows.md](agent-workflows.md).
 
 ## Duplicate detection
 
@@ -42,7 +46,7 @@ Without `--once` a poll runs until its timeout; with it the schedule completes a
 
 `--refresh` atomically updates an active schedule in place instead of removing and re-adding it — useful for resetting a poll timeout or changing trigger parameters while preserving the schedule ID.
 
-- Matches on `--name`, so `--refresh` requires `--name` (and is mutually exclusive with `--force`).
+- Matches on `--name`, so `--refresh` requires `--name`. It does not combine with `--force`, because `--force` bypasses the very duplicate check `--refresh` relies on to find the existing schedule.
 - If an active schedule with that name exists → updates it (status `"refreshed"`, same ID); otherwise creates one (upsert semantics).
 - Paused schedules are updated but stay paused.
 - `CreatedAt` is reset, so poll timeouts restart from now.
@@ -117,6 +121,8 @@ Always pass `--user-request` with the original request that motivated the schedu
 sundial list --json
 sundial show <id> --json
 ```
+
+`sundial show` also surfaces the schedule's readiness configuration (`exec_timeout`, `precondition`, and any `precondition_backoff`/`precondition_max_elapsed` overrides) and — crucially — its **live precondition-backoff state**. When a fire is currently held back because the precondition exited non-zero, `show` renders a `deferred: precondition not met (attempt N, next retry <local time>)` line (in JSON: `precondition_deferred`, `precondition_attempts`, `precondition_retry_at`), and `list` tags that schedule `[deferred]`. This lets you distinguish a schedule *waiting on a precondition* (its `next_fire` is the retry instant, not the natural slot) from one that is genuinely idle until its next fire. It is the live complement to the `deferred` run-log entries that record past deferrals.
 
 The git-tracked files under `<data_repo>/sundial/schedules/` hold only the definition (trigger, command, status) — never the runtime fields — so a raw file read can't tell you when something next fires or whether its last run succeeded. Treat those files as **persistence and sync, not a query API**: read them only for git archaeology (what changed, when) or when debugging the daemon. For everything else, ask the CLI.
 
