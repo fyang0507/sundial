@@ -8,34 +8,76 @@ import (
 	"github.com/fyang0507/sundial/internal/model"
 )
 
-// runLoop is the main scheduler loop. It sleeps until the next fire time,
-// fires due schedules, and recalculates when the schedule set changes.
+// maxTick bounds how long the run loop will sleep on a single timer, even when
+// the next fire is hours away (or there are no active schedules at all).
+//
+// Go timers run on the MONOTONIC clock, which macOS SUSPENDS while the system
+// sleeps. A single time.NewTimer(time.Until(next)) armed before sleep therefore
+// fires late by the entire sleep duration — the daemon would sleep through a
+// fire and never notice until the stale timer eventually fired. Capping every
+// sleep at maxTick guarantees the loop wakes (in WALL-clock terms) at least once
+// a minute after the machine resumes, giving the gap detector (see below) a
+// chance to run the missed-fire reconciliation that the frozen timer can't.
+const maxTick = 60 * time.Second
+
+// wakeGapThreshold is how far wall-clock time must jump between two loop ticks
+// for us to conclude the system slept (rather than merely ticking late under
+// load). maxTick + 30s of slack: a normal tick advances the wall clock by ~maxTick,
+// so anything materially beyond that is a suspend/resume gap.
+const wakeGapThreshold = maxTick + 30*time.Second
+
+// runLoop is the main scheduler loop. It wakes on the soonest fire time (bounded
+// by maxTick), fires due schedules, and recalculates when the schedule set
+// changes. Because Go timers freeze during system sleep, the loop also tracks
+// wall-clock time across iterations and, when it detects a gap larger than one
+// bounded tick, re-runs missed-fire classification before firing.
 func (d *Daemon) runLoop() {
+	lastTick := time.Now()
+
+	// maybeReconcileGap detects a wall-clock gap that exceeds a single bounded
+	// tick: the monotonic timer froze through a system sleep. When that happens
+	// it re-classifies missed fires (advancing beyond-grace cron/solar, completing
+	// timed-out polls and missed `at`s, leaving within-grace ones in the past)
+	// so the subsequent fireDueSchedules pass doesn't replay every occurrence that
+	// elapsed during sleep. It runs on EITHER select arm — a buffered wake signal
+	// queued just before sleep must not mask the gap by winning the race and
+	// skipping reconciliation.
+	maybeReconcileGap := func(now time.Time) {
+		if now.Sub(lastTick) > wakeGapThreshold {
+			log.Printf("detected wall-clock gap of %s (likely system sleep), reconciling missed fires",
+				now.Sub(lastTick).Round(time.Second))
+			d.reconcileMissedFires()
+		}
+		lastTick = now
+	}
+
 	for {
 		nextID, nextTime := d.soonestFire()
 
-		var timer *time.Timer
-		if nextID == "" {
-			// No active schedules — use a long sleep and wait for wake/quit.
-			timer = time.NewTimer(24 * time.Hour)
-		} else {
-			dur := time.Until(nextTime)
-			if dur < 0 {
-				dur = 0
+		// Bound the sleep at maxTick so we keep waking for gap/wake detection
+		// even when the next fire is far off or there are no active schedules.
+		dur := maxTick
+		if nextID != "" {
+			if until := time.Until(nextTime); until < dur {
+				dur = until
 			}
-			timer = time.NewTimer(dur)
 		}
+		if dur < 0 {
+			dur = 0
+		}
+		timer := time.NewTimer(dur)
 
 		select {
 		case <-timer.C:
-			if nextID == "" {
-				// Spurious timer, loop back.
-				continue
-			}
+			maybeReconcileGap(time.Now())
+			// Always attempt to fire: a normally-late tick still has due
+			// schedules, and the within-grace misses left in the past by the
+			// gap reconciler need firing here.
 			d.fireDueSchedules()
 
 		case <-d.wake:
 			timer.Stop()
+			maybeReconcileGap(time.Now())
 			continue
 
 		case <-d.quit:
@@ -104,14 +146,25 @@ func (d *Daemon) fireDueSchedules() {
 		// (we still hold sched.mu), logs "skipping", and tight-loops the CPU
 		// until the fire goroutine finishes.
 		d.mu.Lock()
+		// Capture the fire time we are servicing before zeroing it. A precondition
+		// deferral needs it both as the miss's scheduled_for (if we give up) and,
+		// for a retry on a recurring trigger, as the anchor for the next regular
+		// fire that bounds the backoff.
+		intendedFire := sched.runtime.NextFireAt
 		sched.runtime.NextFireAt = time.Time{}
 		d.mu.Unlock()
 		d.wg.Add(1)
 		go func() {
 			defer d.wg.Done()
 			defer sched.mu.Unlock()
-			d.execute(sched)
-			d.advanceSchedule(sched)
+			outcome := d.execute(sched)
+			if outcome.Deferred {
+				// A precondition held the fire back: arrange a backoff retry (or
+				// give up) instead of advancing the regular schedule.
+				d.deferPrecondition(sched, intendedFire)
+			} else {
+				d.advanceSchedule(sched)
+			}
 			d.signalWake()
 		}()
 	}
@@ -150,6 +203,210 @@ func (d *Daemon) advanceSchedule(sched *activeSchedule) {
 		log.Printf("WARN: schedule %s: failed to persist runtime after fire: %v",
 			sched.desired.ID, err)
 	}
+}
+
+// deferPrecondition arranges what happens after a fire was held back by a
+// failing precondition. It either schedules a backoff retry (advancing
+// NextFireAt to now+backoff and bumping the attempt counter) or, when the retry
+// would cross the give-up deadline, logs a miss, resets the retry state, and
+// either advances to the next regular fire (recurring triggers) or completes the
+// schedule (one-off `at`/`--once` with no recurrence).
+//
+// intendedFire is the fire time we were servicing — used as the miss's
+// scheduled_for and, for recurring triggers, as the boundary the backoff must
+// not cross.
+//
+// Termination precedence (give up if ANY holds):
+//  1. A finite next regular fire exists and the next retry would land at/after it.
+//  2. PreconditionMaxElapsed is set and now >= first-deferred-at + max-elapsed.
+//  3. No finite next regular fire (one-off `at`) and now >= first-deferred-at +
+//     the daemon at-deadline budget (DefaultPreconditionMaxElapsed / config).
+//
+// Caller (fireDueSchedules) holds sched.mu across the whole fire cycle, so the
+// store writes here cannot race a concurrent RPC mutator of the same schedule.
+func (d *Daemon) deferPrecondition(sched *activeSchedule, intendedFire time.Time) {
+	now := time.Now()
+
+	// Anchor the give-up budget and the original intended fire on the first
+	// deferral of this retry sequence. intendedFire is captured fresh from
+	// NextFireAt each tick, so on a backoff RETRY it is the retry instant, not the
+	// scheduled occurrence — pin the real occurrence here on attempt #1.
+	if sched.runtime.PreconditionFirstDeferredAt == nil {
+		first := now
+		sched.runtime.PreconditionFirstDeferredAt = &first
+		origFire := intendedFire
+		sched.runtime.PreconditionIntendedFire = &origFire
+	}
+
+	backoff := d.effectivePreconditionBackoff(sched)
+	wait := backoff[min(sched.runtime.PreconditionAttempts, len(backoff)-1)]
+	nextRetry := now.Add(wait)
+
+	// Next regular fire (zero for a one-off `at` whose single fire has passed).
+	nextRegularFire := sched.trigger.NextFireTime(now)
+	hasRegularFire := !nextRegularFire.IsZero()
+
+	// Evaluate the give-up conditions.
+	giveUp := false
+	switch {
+	case hasRegularFire && !nextRetry.Before(nextRegularFire):
+		// The next retry would land at/after the next regular fire — stop and let
+		// the regular schedule take over.
+		giveUp = true
+	default:
+		// Elapsed-budget bound: an explicit per-schedule max-elapsed always
+		// applies; otherwise the daemon at-budget applies only when there is no
+		// finite next regular fire (one-off `at`).
+		if budget, ok := d.preconditionElapsedBudget(sched, hasRegularFire); ok {
+			if !now.Before(sched.runtime.PreconditionFirstDeferredAt.Add(budget)) {
+				giveUp = true
+			}
+		}
+	}
+
+	if giveUp {
+		log.Printf("schedule %s (%s): precondition not met before give-up deadline (%d attempt(s)), logging miss",
+			sched.desired.ID, sched.desired.Name, sched.runtime.PreconditionAttempts)
+
+		// Prefer the pinned original occurrence; fall back to the per-tick
+		// intendedFire if (defensively) the anchor was never set.
+		scheduledFor := intendedFire
+		if sched.runtime.PreconditionIntendedFire != nil {
+			scheduledFor = *sched.runtime.PreconditionIntendedFire
+		}
+		entry := &model.RunLogEntry{
+			Timestamp:    now,
+			Type:         model.LogTypeMiss,
+			ScheduleID:   sched.desired.ID,
+			Reason:       "precondition not met",
+			ScheduledFor: &scheduledFor,
+		}
+		if err := d.runLogStore.Append(entry); err != nil {
+			log.Printf("WARN: schedule %s: failed to append precondition miss entry: %v",
+				sched.desired.ID, err)
+		}
+
+		// Reset retry state before advancing/completing so a future fire starts clean.
+		sched.runtime.PreconditionAttempts = 0
+		sched.runtime.PreconditionFirstDeferredAt = nil
+		sched.runtime.PreconditionIntendedFire = nil
+
+		if !hasRegularFire {
+			// One-off `at` (or any trigger with no future fire): nothing to advance
+			// to, so the schedule is done. completeSchedule persists and removes it.
+			d.completeSchedule(sched, model.CompletionMissed)
+			return
+		}
+
+		d.mu.Lock()
+		sched.runtime.NextFireAt = nextRegularFire
+		d.mu.Unlock()
+		if err := d.runtimeStore.Write(sched.runtime); err != nil {
+			log.Printf("WARN: schedule %s: failed to persist runtime after precondition give-up: %v",
+				sched.desired.ID, err)
+		}
+		return
+	}
+
+	// Schedule a backoff retry. Bump the attempt counter (indexes the backoff
+	// schedule) and set NextFireAt to the retry time. The regular schedule is NOT
+	// advanced — once the precondition passes, the deferred fire still happens.
+	sched.runtime.PreconditionAttempts++
+
+	log.Printf("schedule %s (%s): precondition deferred fire (attempt #%d), retrying in %s",
+		sched.desired.ID, sched.desired.Name, sched.runtime.PreconditionAttempts, wait)
+
+	entry := &model.RunLogEntry{
+		Timestamp:  now,
+		Type:       model.LogTypeDeferred,
+		ScheduleID: sched.desired.ID,
+		Reason:     fmt.Sprintf("precondition not met (attempt #%d, retry in %s)", sched.runtime.PreconditionAttempts, wait),
+	}
+	if err := d.runLogStore.Append(entry); err != nil {
+		log.Printf("WARN: schedule %s: failed to append deferred entry: %v",
+			sched.desired.ID, err)
+	}
+
+	d.mu.Lock()
+	sched.runtime.NextFireAt = nextRetry
+	d.mu.Unlock()
+	if err := d.runtimeStore.Write(sched.runtime); err != nil {
+		log.Printf("WARN: schedule %s: failed to persist runtime after precondition defer: %v",
+			sched.desired.ID, err)
+	}
+}
+
+// effectivePreconditionBackoff resolves the backoff schedule for a single
+// schedule: its per-schedule override if set and all entries parse, else the
+// daemon default. Always returns a non-empty slice of positive durations so the
+// caller can index it unconditionally — a malformed override degrades to the
+// daemon default rather than aborting the retry.
+func (d *Daemon) effectivePreconditionBackoff(sched *activeSchedule) []time.Duration {
+	if parsed, ok := parseDurations(sched.desired.PreconditionBackoff); ok {
+		return parsed
+	}
+	if len(sched.desired.PreconditionBackoff) > 0 {
+		log.Printf("WARN: schedule %s: invalid precondition_backoff %v, using daemon default",
+			sched.desired.ID, sched.desired.PreconditionBackoff)
+	}
+	if parsed, ok := parseDurations(d.cfg.Daemon.PreconditionBackoff); ok {
+		return parsed
+	}
+	// Final fallback: the package default. Reached only if the daemon config was
+	// constructed without applyDefaults (e.g. some tests) and carries a malformed
+	// or empty backoff list.
+	parsed, _ := parseDurations(model.DefaultPreconditionBackoff)
+	return parsed
+}
+
+// preconditionElapsedBudget returns the elapsed-budget duration that bounds
+// precondition retries, and whether such a budget applies.
+//
+//   - A per-schedule PreconditionMaxElapsed override always applies (and takes
+//     precedence), regardless of whether a next regular fire exists.
+//   - Otherwise the daemon at-deadline budget applies ONLY when there is no
+//     finite next regular fire (a one-off `at`), since recurring triggers are
+//     already bounded by their next fire.
+func (d *Daemon) preconditionElapsedBudget(sched *activeSchedule, hasRegularFire bool) (time.Duration, bool) {
+	if sched.desired.PreconditionMaxElapsed != "" {
+		if dur, err := time.ParseDuration(sched.desired.PreconditionMaxElapsed); err == nil && dur > 0 {
+			return dur, true
+		}
+		log.Printf("WARN: schedule %s: invalid precondition_max_elapsed %q, ignoring",
+			sched.desired.ID, sched.desired.PreconditionMaxElapsed)
+	}
+	if hasRegularFire {
+		return 0, false
+	}
+	budget := d.cfg.Daemon.PreconditionMaxElapsed
+	if budget == "" {
+		budget = model.DefaultPreconditionMaxElapsed
+	}
+	if dur, err := time.ParseDuration(budget); err == nil && dur > 0 {
+		return dur, true
+	}
+	// Misconfigured daemon budget — fall back to the package default so an `at`
+	// precondition still has a finite give-up deadline.
+	dur, _ := time.ParseDuration(model.DefaultPreconditionMaxElapsed)
+	return dur, true
+}
+
+// parseDurations parses a slice of Go-duration strings into time.Durations.
+// Returns (nil, false) if the slice is empty or any entry fails to parse or is
+// non-positive, so callers can fall back to a default.
+func parseDurations(in []string) ([]time.Duration, bool) {
+	if len(in) == 0 {
+		return nil, false
+	}
+	out := make([]time.Duration, 0, len(in))
+	for _, s := range in {
+		dur, err := time.ParseDuration(s)
+		if err != nil || dur <= 0 {
+			return nil, false
+		}
+		out = append(out, dur)
+	}
+	return out, true
 }
 
 // completeSchedule marks a schedule as completed with the given reason: updates

@@ -112,17 +112,56 @@ func (d *Daemon) reconcile(isStartup bool) error {
 	}
 
 	if isStartup {
+		// Classify any fires missed while the daemon was offline. Within-grace
+		// misses are LEFT with NextFireAt in the past so the run loop's first
+		// fireDueSchedules pass executes them once; this classifier never
+		// executes commands itself (the daemon stays the single writer, and we
+		// avoid running commands while holding d.mu).
 		d.handleMissedFires()
+	} else {
+		// Non-startup reconcile (e.g. RPC-driven reload): we are not recovering
+		// from downtime, so any past NextFireAt should be advanced rather than
+		// treated as a missed fire to coalesce.
+		d.advanceAllSchedules()
 	}
 
-	d.advanceAllSchedules()
 	d.signalWake()
 
 	return nil
 }
 
-// handleMissedFires checks each active schedule for fires that should have
-// occurred while the daemon was not running.
+// reconcileMissedFires is the wake-path entry point for missed-fire handling.
+// It exists separately from reconcile() so the run loop can re-run the same
+// classification after a detected wall-clock gap (system sleep) WITHOUT
+// re-reading the stores or rebuilding the schedule map. It takes d.mu the same
+// way startup reconcile does and never executes commands while holding it —
+// the within-grace misses it leaves in the past are fired by the run loop's
+// subsequent fireDueSchedules pass.
+func (d *Daemon) reconcileMissedFires() {
+	d.mu.Lock()
+	d.handleMissedFires()
+	d.mu.Unlock()
+	d.signalWake()
+}
+
+// handleMissedFires classifies each active schedule whose NextFireAt is in the
+// past and adjusts its runtime state. It does NOT execute commands — that is the
+// run loop's job via fireDueSchedules. The classification rules are:
+//
+//   - cron/solar within the grace window: LEAVE NextFireAt in the past so the
+//     next fireDueSchedules pass fires it exactly once (coalescing many missed
+//     occurrences into a single catch-up fire).
+//   - cron/solar beyond grace: log the missed fires (capped individual entries
+//     plus a miss_summary) and advance NextFireAt to the next FUTURE fire time
+//     so the catch-up fire is suppressed.
+//   - at within grace: leave in the past to fire once.
+//   - at beyond grace: log one miss and complete with reason "missed".
+//   - poll: if timed out, complete with reason "timeout"; otherwise advance past
+//     the missed checks (a missed poll check carries no meaning — the condition
+//     may or may not still hold).
+//
+// Callers must hold d.mu (reconcile holds it via its defer; reconcileMissedFires
+// takes it explicitly).
 func (d *Daemon) handleMissedFires() {
 	now := time.Now()
 
@@ -133,6 +172,21 @@ func (d *Daemon) handleMissedFires() {
 
 		nextFire := sched.runtime.NextFireAt
 		if nextFire.IsZero() || !nextFire.Before(now) {
+			continue
+		}
+
+		// A pending precondition backoff retry stores a FUTURE NextFireAt that may
+		// now be in the past (we slept through the retry, or the daemon restarted
+		// mid-backoff). This is NOT a missed fire: leave NextFireAt in the past so
+		// the next fireDueSchedules pass re-enters execute -> checkPrecondition,
+		// which re-evaluates the gate and lets deferPrecondition re-apply the
+		// correct backoff/give-up using the preserved first-deferred-at anchor.
+		// Classifying it as a miss here would emit spurious "daemon was not running"
+		// entries, silently discard the in-flight backoff (leaving a stale attempt
+		// count and anchor), or prematurely complete an `at` still inside its budget.
+		if sched.runtime.PreconditionFirstDeferredAt != nil {
+			log.Printf("schedule %s (%s): pending precondition retry past due, will re-check on next tick",
+				id, sched.desired.Name)
 			continue
 		}
 
@@ -158,11 +212,13 @@ func (d *Daemon) handleMissedFires() {
 		elapsed := now.Sub(nextFire)
 
 		if elapsed <= missGracePeriod {
-			// Within grace period: fire the command.
-			log.Printf("schedule %s (%s): missed fire within grace period (%.0fs ago), executing",
+			// Within grace: leave NextFireAt in the past. The run loop's
+			// fireDueSchedules pass (which runs right after startup reconcile,
+			// and again after a wake-gap detection) will fire it once. We do
+			// not execute here — that keeps command execution off the d.mu
+			// critical section and out of the single-writer classifier.
+			log.Printf("schedule %s (%s): missed fire within grace period (%.0fs ago), will fire on next tick",
 				id, sched.desired.Name, elapsed.Seconds())
-			// Execute in current goroutine during startup.
-			d.execute(sched)
 		} else if sched.desired.Trigger.Type == model.TriggerTypeAt {
 			// `at` fires exactly once. Beyond grace, log one miss and complete
 			// with reason "missed" so the schedule doesn't sit active-but-inert.
@@ -180,8 +236,14 @@ func (d *Daemon) handleMissedFires() {
 			}
 			d.completeSchedule(sched, model.CompletionMissed)
 		} else {
-			// Beyond grace period: log misses.
+			// cron/solar beyond grace: log the misses and advance NextFireAt to
+			// the next future fire so the catch-up fire is suppressed.
 			d.logMissedFires(sched, nextFire, now)
+			next := sched.trigger.NextFireTime(now)
+			sched.runtime.NextFireAt = next
+			if err := d.runtimeStore.Write(sched.runtime); err != nil {
+				log.Printf("WARN: schedule %s: failed to persist runtime after miss advance: %v", id, err)
+			}
 		}
 	}
 }

@@ -26,6 +26,8 @@ Four triggers cover the scheduling repertoire. See [scheduling.md](scheduling.md
 - **poll** — condition-gated periodic check: runs a trigger command on an interval and fires the main command only when the trigger exits `0`. Use for "when a reply arrives — could be 2 minutes, could be 3 days".
 - **at** — one-off fire at an absolute timestamp; auto-completes after firing. Use for "wake me up at 10am tomorrow".
 
+Two cross-cutting flags apply to **any** trigger: `--exec-timeout` caps a command's wall-clock runtime (kills it if it hangs), and `--precondition` adds a readiness gate that defers-and-retries with exponential backoff when a check command exits non-zero (e.g. "only fire when the network is up"). See [scheduling.md](scheduling.md) for both.
+
 ## Scheduling your future self
 
 If you're an agent (or building a tool that wraps one) and want to invoke a fresh or resumed agent session — at an absolute time, on a recurring cadence, or when an external condition becomes true:
@@ -34,6 +36,6 @@ If you're an agent (or building a tool that wraps one) and want to invoke a fres
 
 ## Scheduler reference
 
-`sundial <command> --help` is the canonical flag-and-syntax reference for each trigger. For the behavior and contracts `--help` can't convey — the poll trigger contract, the `--detach` + `--refresh` callback pattern, duplicate detection, inspecting state, the data-repo model, git sync, diagnostics, and how to give feedback:
+`sundial <command> --help` is the canonical flag-and-syntax reference for each trigger. For the behavior and contracts `--help` can't convey — the poll trigger contract, the `--detach` + `--refresh` callback pattern, `--exec-timeout` and `--precondition` readiness gates, duplicate detection, inspecting state, the data-repo model, git sync, diagnostics, and how to give feedback:
 
 → **[scheduling.md](scheduling.md)** — enriches `--help` with contracts and operational detail.

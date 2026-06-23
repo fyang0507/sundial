@@ -9,6 +9,8 @@ data_repo: "~/data_repo"   # REQUIRED — path to the data repo for schedule def
 #   socket_path: "~/Library/Application Support/sundial/sundial.sock"
 #   log_level: info                      # debug | info | warn | error
 #   log_file: "~/Library/Logs/sundial/sundial.log"
+#   precondition_backoff: ["1m", "5m", "30m", "1h", "2h"]  # default --precondition retry backoff (last entry repeats as cap)
+#   precondition_max_elapsed: "2h"       # give-up budget for a precondition on a one-off `at` schedule
 #
 # state:
 #   path: "~/.config/sundial/state/"     # runtime state (daemon-managed, not portable)

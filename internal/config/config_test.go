@@ -98,6 +98,18 @@ func TestLoad_MinimalConfig_DefaultsApplied(t *testing.T) {
 	if cfg.State.LogsPath != wantLogs {
 		t.Errorf("State.LogsPath = %q, want %q", cfg.State.LogsPath, wantLogs)
 	}
+	wantBackoff := []string{"1m", "5m", "30m", "1h", "2h"}
+	if len(cfg.Daemon.PreconditionBackoff) != len(wantBackoff) {
+		t.Fatalf("PreconditionBackoff = %v, want %v", cfg.Daemon.PreconditionBackoff, wantBackoff)
+	}
+	for i, v := range wantBackoff {
+		if cfg.Daemon.PreconditionBackoff[i] != v {
+			t.Errorf("PreconditionBackoff[%d] = %q, want %q", i, cfg.Daemon.PreconditionBackoff[i], v)
+		}
+	}
+	if cfg.Daemon.PreconditionMaxElapsed != "2h" {
+		t.Errorf("PreconditionMaxElapsed = %q, want 2h", cfg.Daemon.PreconditionMaxElapsed)
+	}
 }
 
 func TestValidate_MissingDataRepo(t *testing.T) {

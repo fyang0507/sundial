@@ -246,19 +246,30 @@ func TestHandleMissedFires_WithinGrace(t *testing.T) {
 	}
 	d.mu.Unlock()
 
-	// handleMissedFires should execute the command (echo test).
+	// handleMissedFires must NOT execute the command — it only classifies.
+	// Within-grace misses are LEFT with NextFireAt in the past so the run
+	// loop's fireDueSchedules pass fires them once.
 	d.handleMissedFires()
 
-	// Check that it fired: runtime should have a LastFiredAt and fire count.
 	d.mu.RLock()
 	sched := d.schedules["sch_eee555"]
 	d.mu.RUnlock()
 
-	if sched.runtime.LastFiredAt == nil {
-		t.Error("expected LastFiredAt to be set after within-grace missed fire")
+	// Must not have fired (classifier never executes).
+	if sched.runtime.LastFiredAt != nil {
+		t.Error("expected handleMissedFires not to execute within-grace miss")
 	}
-	if sched.runtime.FireCount != 1 {
-		t.Errorf("expected FireCount=1, got %d", sched.runtime.FireCount)
+	if sched.runtime.FireCount != 0 {
+		t.Errorf("expected FireCount=0 (no execution), got %d", sched.runtime.FireCount)
+	}
+
+	// NextFireAt must be LEFT in the past so fireDueSchedules will fire it.
+	if !sched.runtime.NextFireAt.Equal(pastTime) {
+		t.Errorf("expected within-grace NextFireAt left in the past at %v, got %v",
+			pastTime, sched.runtime.NextFireAt)
+	}
+	if sched.runtime.NextFireAt.After(time.Now()) {
+		t.Error("expected within-grace NextFireAt to remain in the past")
 	}
 }
 
@@ -302,6 +313,12 @@ func TestHandleMissedFires_BeyondGrace(t *testing.T) {
 
 	if sched.runtime.LastFiredAt != nil {
 		t.Error("expected no fire for beyond-grace missed fire")
+	}
+
+	// NextFireAt should have been advanced to a future time so the catch-up
+	// fire is suppressed (the run loop must not replay the missed occurrences).
+	if !sched.runtime.NextFireAt.After(time.Now()) {
+		t.Errorf("expected NextFireAt advanced to the future, got %v", sched.runtime.NextFireAt)
 	}
 
 	// Should have logged miss entries.

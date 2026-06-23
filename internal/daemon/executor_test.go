@@ -97,6 +97,152 @@ func TestRunCommandWithEnv_NilEnv(t *testing.T) {
 	}
 }
 
+func TestRunCommandWithTimeout_FastCommandCompletes(t *testing.T) {
+	// A command that finishes well within the timeout returns its real exit
+	// code and is not flagged as timed out.
+	result := runCommandWithTimeout("echo done; exit 7", nil, 5*time.Second)
+
+	if result.TimedOut {
+		t.Error("expected TimedOut=false for a command that finished in time")
+	}
+	if result.ExitCode != 7 {
+		t.Errorf("expected exit code 7, got %d", result.ExitCode)
+	}
+	if stdout := strings.TrimSpace(result.StdoutPreview); stdout != "done" {
+		t.Errorf("expected stdout 'done', got %q", stdout)
+	}
+}
+
+func TestRunCommandWithTimeout_HungCommandKilled(t *testing.T) {
+	// A long sleep with a short timeout must be killed promptly, report a
+	// nonzero (-1) exit code, and be flagged as timed out.
+	timeout := 200 * time.Millisecond
+	start := time.Now()
+	result := runCommandWithTimeout("sleep 10", nil, timeout)
+	elapsed := time.Since(start)
+
+	if !result.TimedOut {
+		t.Error("expected TimedOut=true for a command that exceeded the timeout")
+	}
+	if result.ExitCode != -1 {
+		t.Errorf("expected exit code -1 on timeout, got %d", result.ExitCode)
+	}
+	// Should be killed roughly at the deadline, not run the full 10s sleep.
+	if elapsed > 3*time.Second {
+		t.Errorf("expected command to be killed near the timeout, took %s", elapsed)
+	}
+}
+
+func TestExecute_ExecTimeoutKillsAndLogsTimeout(t *testing.T) {
+	d := newTestDaemon(t)
+
+	desired := makeCronDesired("sch_exec_timeout01", "timeout-exec", "0 9 * * *")
+	desired.Command = "sleep 10"
+	desired.ExecTimeout = "200ms"
+	trig, err := trigger.ParseTrigger(desired.Trigger)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	runtime := &model.RuntimeState{
+		ID:         "sch_exec_timeout01",
+		NextFireAt: time.Now(),
+	}
+	if err := d.runtimeStore.Write(runtime); err != nil {
+		t.Fatal(err)
+	}
+
+	sched := &activeSchedule{
+		desired: desired,
+		runtime: runtime,
+		trigger: trig,
+	}
+
+	d.mu.Lock()
+	d.schedules["sch_exec_timeout01"] = sched
+	d.mu.Unlock()
+
+	start := time.Now()
+	fired := d.execute(sched).Executed
+	elapsed := time.Since(start)
+
+	if !fired {
+		t.Error("expected execute to return true (the command ran, then timed out)")
+	}
+	if elapsed > 3*time.Second {
+		t.Errorf("expected execute to return near the timeout, took %s", elapsed)
+	}
+	if sched.runtime.LastExitCode == nil {
+		t.Fatal("expected LastExitCode to be set")
+	}
+	if *sched.runtime.LastExitCode != -1 {
+		t.Errorf("expected LastExitCode=-1 on timeout, got %d", *sched.runtime.LastExitCode)
+	}
+
+	// The fire entry must record the timeout reason.
+	entries, err := d.runLogStore.Read("sch_exec_timeout01")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 run log entry, got %d", len(entries))
+	}
+	if entries[0].Reason != "timeout" {
+		t.Errorf("expected run log reason 'timeout', got %q", entries[0].Reason)
+	}
+	if !strings.Contains(entries[0].StderrPreview, "exec_timeout") {
+		t.Errorf("expected stderr preview to note the exec_timeout, got %q", entries[0].StderrPreview)
+	}
+}
+
+func TestExecute_NoExecTimeoutRunsToCompletion(t *testing.T) {
+	// With no ExecTimeout set, a quick command runs to completion and is never
+	// flagged as a timeout — the default unbounded path is preserved.
+	d := newTestDaemon(t)
+
+	desired := makeCronDesired("sch_exec_notimeout01", "no-timeout-exec", "0 9 * * *")
+	desired.Command = "exit 3"
+	trig, err := trigger.ParseTrigger(desired.Trigger)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	runtime := &model.RuntimeState{
+		ID:         "sch_exec_notimeout01",
+		NextFireAt: time.Now(),
+	}
+	if err := d.runtimeStore.Write(runtime); err != nil {
+		t.Fatal(err)
+	}
+
+	sched := &activeSchedule{
+		desired: desired,
+		runtime: runtime,
+		trigger: trig,
+	}
+
+	d.mu.Lock()
+	d.schedules["sch_exec_notimeout01"] = sched
+	d.mu.Unlock()
+
+	if !d.execute(sched).Executed {
+		t.Error("expected execute to return true")
+	}
+	if sched.runtime.LastExitCode == nil || *sched.runtime.LastExitCode != 3 {
+		t.Errorf("expected LastExitCode=3, got %v", sched.runtime.LastExitCode)
+	}
+	entries, err := d.runLogStore.Read("sch_exec_notimeout01")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 run log entry, got %d", len(entries))
+	}
+	if entries[0].Reason != "" {
+		t.Errorf("expected empty run log reason, got %q", entries[0].Reason)
+	}
+}
+
 func TestExecute_PollTriggerCheckPasses(t *testing.T) {
 	d := newTestDaemon(t)
 
@@ -124,7 +270,7 @@ func TestExecute_PollTriggerCheckPasses(t *testing.T) {
 	d.schedules["sch_exec_poll01"] = sched
 	d.mu.Unlock()
 
-	fired := d.execute(sched)
+	fired := d.execute(sched).Executed
 
 	if !fired {
 		t.Error("expected execute to return true when trigger check passes")
@@ -164,7 +310,7 @@ func TestExecute_PollTriggerCheckFails(t *testing.T) {
 	d.schedules["sch_exec_poll02"] = sched
 	d.mu.Unlock()
 
-	fired := d.execute(sched)
+	fired := d.execute(sched).Executed
 
 	if fired {
 		t.Error("expected execute to return false when trigger check fails")
@@ -211,7 +357,7 @@ func TestExecute_DetachedReturnsImmediately(t *testing.T) {
 	d.mu.Unlock()
 
 	start := time.Now()
-	fired := d.execute(sched)
+	fired := d.execute(sched).Executed
 	elapsed := time.Since(start)
 
 	if !fired {
@@ -301,7 +447,7 @@ func TestExecute_NonPollReturnsTrue(t *testing.T) {
 	d.schedules["sch_exec_cron01"] = sched
 	d.mu.Unlock()
 
-	fired := d.execute(sched)
+	fired := d.execute(sched).Executed
 
 	if !fired {
 		t.Error("expected execute to return true for cron trigger")

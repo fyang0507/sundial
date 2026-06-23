@@ -92,6 +92,45 @@ func (d *Daemon) Handle(method string, params json.RawMessage) (interface{}, *mo
 	}
 }
 
+// validateExecutionParams checks the duration-bearing execution flags
+// (--exec-timeout and the --precondition backoff/budget overrides) and the
+// exec-timeout/detach incompatibility, mirroring the CLI's validateSharedAddFlags
+// so a direct RPC client gets the same rejection rather than silent degradation.
+func validateExecutionParams(p model.AddParams) *model.RPCError {
+	invalid := func(msg string) *model.RPCError {
+		return &model.RPCError{Code: model.RPCErrCodeInvalidParams, Message: msg}
+	}
+
+	if p.ExecTimeout != "" {
+		if p.Detach {
+			return invalid("--exec-timeout cannot be combined with --detach (a detached command's exit is never captured)")
+		}
+		if dur, err := time.ParseDuration(p.ExecTimeout); err != nil || dur <= 0 {
+			return invalid(fmt.Sprintf("invalid exec_timeout %q: must be a positive Go duration (e.g. \"30m\")", p.ExecTimeout))
+		}
+	}
+
+	if len(p.PreconditionBackoff) > 0 && p.Precondition == "" {
+		return invalid("precondition_backoff requires a precondition")
+	}
+	for _, s := range p.PreconditionBackoff {
+		if dur, err := time.ParseDuration(s); err != nil || dur <= 0 {
+			return invalid(fmt.Sprintf("invalid precondition_backoff entry %q: must be a positive Go duration", s))
+		}
+	}
+
+	if p.PreconditionMaxElapsed != "" {
+		if p.Precondition == "" {
+			return invalid("precondition_max_elapsed requires a precondition")
+		}
+		if dur, err := time.ParseDuration(p.PreconditionMaxElapsed); err != nil || dur <= 0 {
+			return invalid(fmt.Sprintf("invalid precondition_max_elapsed %q: must be a positive Go duration", p.PreconditionMaxElapsed))
+		}
+	}
+
+	return nil
+}
+
 // handleAdd creates a new schedule.
 func (d *Daemon) handleAdd(p model.AddParams) (*model.AddResult, *model.RPCError) {
 	// 1. Build TriggerConfig from params.
@@ -131,6 +170,15 @@ func (d *Daemon) handleAdd(p model.AddParams) (*model.AddResult, *model.RPCError
 	trig, err := trigger.ParseTrigger(trigCfg)
 	if err != nil {
 		return nil, invalidTriggerError(p.Type, err)
+	}
+
+	// 2b. Validate the duration-bearing execution flags server-side. The CLI
+	// already checks these, but the IPC layer is a public contract (AGENTS.md),
+	// so a direct JSON-RPC client must not be able to persist malformed values
+	// that would only surface as a WARN at fire time. handleAdd is the single
+	// entry for create/refresh/reactivate, so validating here covers all three.
+	if rerr := validateExecutionParams(p); rerr != nil {
+		return nil, rerr
 	}
 
 	// 3. Check duplicates against active schedules (exact then fuzzy).
@@ -234,6 +282,11 @@ func (d *Daemon) handleAdd(p model.AddParams) (*model.AddResult, *model.RPCError
 		Status:      model.StatusActive,
 		Once:        p.Once,
 		Detach:      p.Detach,
+		ExecTimeout: p.ExecTimeout,
+
+		Precondition:           p.Precondition,
+		PreconditionBackoff:    p.PreconditionBackoff,
+		PreconditionMaxElapsed: p.PreconditionMaxElapsed,
 	}
 
 	filePath := d.desiredStore.FilePath(id)
@@ -703,6 +756,10 @@ func (d *Daemon) refreshActiveSchedule(
 	existing.desired.Trigger = trigCfg
 	existing.desired.Once = p.Once
 	existing.desired.Detach = p.Detach
+	existing.desired.ExecTimeout = p.ExecTimeout
+	existing.desired.Precondition = p.Precondition
+	existing.desired.PreconditionBackoff = p.PreconditionBackoff
+	existing.desired.PreconditionMaxElapsed = p.PreconditionMaxElapsed
 	if existing.desired.Status == model.StatusCompleted {
 		existing.desired.Status = model.StatusActive
 		existing.desired.CompletionReason = ""
@@ -828,6 +885,10 @@ func (d *Daemon) reactivateSchedule(
 	completed.Trigger = trigCfg
 	completed.Once = p.Once
 	completed.Detach = p.Detach
+	completed.ExecTimeout = p.ExecTimeout
+	completed.Precondition = p.Precondition
+	completed.PreconditionBackoff = p.PreconditionBackoff
+	completed.PreconditionMaxElapsed = p.PreconditionMaxElapsed
 	if p.Name != "" {
 		completed.Name = p.Name
 		name = p.Name

@@ -1,6 +1,6 @@
 # Scheduling with Sundial
 
-This enriches `sundial <command> --help` — it does not repeat it. Every flag, the accepted formats, and a worked example for each trigger already live in `sundial add cron|solar|poll|at --help`. What follows is the behavior and contracts the flag reference can't convey: the poll trigger contract, the `--detach` + `--refresh` callback pattern, duplicate detection, state inspection, the data-repo model, git sync, and diagnostics. For driving agent sessions specifically, see [agent-workflows.md](agent-workflows.md); for one-time setup, see [setup.md](setup.md).
+This enriches `sundial <command> --help` — it does not repeat it. Every flag, the accepted formats, and a worked example for each trigger already live in `sundial add cron|solar|poll|at --help`. What follows is the behavior and contracts the flag reference can't convey: the poll trigger contract, the `--detach` + `--refresh` callback pattern, `--exec-timeout` and `--precondition` readiness gates, duplicate detection, state inspection, the data-repo model, git sync, and diagnostics. For driving agent sessions specifically, see [agent-workflows.md](agent-workflows.md); for one-time setup, see [setup.md](setup.md).
 
 You always talk to the daemon through the CLI — there is no Go library and no stable IPC surface for third parties (the Unix-socket JSON-RPC is an internal detail and may change). Every command accepts `--json` and is non-interactive: exit code `0` = success, `1` = error; errors go to stderr.
 
@@ -55,6 +55,50 @@ If a scheduled command itself calls back into sundial — e.g. a poll callback t
 - `--refresh` on the **nested** add updates the existing schedule in place instead of colliding with duplicate detection.
 
 Use `--detach` only when the callback logs its outcome elsewhere or re-enters sundial. For any command whose exit code you want recorded, let it run attached.
+
+## Capping a command's runtime (`--exec-timeout`)
+
+`--exec-timeout <duration>` (e.g. `30m`, `90s`) bounds the wall-clock runtime of an attached command. It is **opt-in**: with no flag the daemon waits indefinitely (the default). Use it for commands that can hang — a network fetch, an agent session, anything that might never return — so one stuck run can't hold the per-schedule mutex forever and stall the next fire.
+
+- On expiry the command's entire process group is SIGKILLed (children die too, not just the shell). The run is recorded as a fire with `exit_code: -1`, `reason: "timeout"`, and a `[sundial: killed after exec_timeout …]` note in the stderr preview.
+- `--exec-timeout` cannot be combined with `--detach`: a detached command's exit is never captured, so there is nothing to enforce a deadline against. `sundial add` rejects the combination at validation time.
+- Do not confuse it with poll's `--timeout`, which bounds the *lifetime* of the whole poll schedule (how long to keep checking), not the runtime of a single command.
+
+## Readiness gates (`--precondition`)
+
+`--precondition <command>` is a **readiness gate layered on any trigger** (cron, solar, poll, or at). Before each scheduled fire the daemon runs the precondition: **exit 0 → proceed and fire; non-zero → defer** (the command does *not* run, it does *not* count as a fire) and retry later with bounded exponential backoff. With no `--precondition` the schedule fires unconditionally — the default.
+
+**Precondition vs. the poll trigger.** They look similar but solve different problems:
+
+- **poll** *is* the trigger: it has no other schedule and checks its `--trigger` command on a **fixed interval** until the condition holds (or its `--timeout` lifetime expires). Use it for "fire whenever this becomes true — could be minutes, could be days."
+- **precondition** is a gate on a trigger that already has its own cadence. Use it for "fire on my normal schedule, but only once the world is ready." When the gate isn't ready it retries with **growing backoff** (not a fixed interval) and gives up by default at the next regular fire.
+
+### Backoff and termination
+
+- **Default backoff**: `1m, 5m, 30m, 1h, 2h`. The Nth deferral waits the Nth entry; the **last entry repeats as the cap**. Override the daemon-wide default via `daemon.precondition_backoff` in `<data_repo>/sundial/config.yaml`.
+- **Default termination** is bounded by the **next regular fire**: the daemon keeps retrying until the precondition passes *or* the next backoff retry would land at/after the schedule's next regular fire. At that point it gives up, logs a miss (`reason: "precondition not met"`), resets the backoff, and advances to the next regular fire. For a one-off `at` (no next regular fire), the deadline is the first deferral plus a max-elapsed budget (default `2h`, configurable via `daemon.precondition_max_elapsed`); on expiry the `at` schedule completes with reason `missed`.
+- **Per-schedule overrides**:
+  - `--precondition-backoff "1m,5m,30m,1h,2h"` — comma-separated Go durations; replaces the schedule's backoff (each entry validated at add time).
+  - `--precondition-max-elapsed <duration>` — when set, the daemon also terminates once `now ≥ first-deferral + this budget`. It takes **precedence** and applies *in addition to* the next-regular-fire bound: a deferral gives up as soon as *either* the next retry crosses the next regular fire *or* the elapsed budget is exhausted, whichever comes first.
+
+Each deferral is recorded as a `deferred` run-log entry (with the attempt number and next retry delay); the eventual give-up is a `miss`. `sundial show` and the run log under `~/.config/sundial/logs/<id>.jsonl` reflect both.
+
+### For complex or multiple conditions
+
+The precondition is a single shell command, but a command can be a script. For several conditions (network *and* a file present *and* a service healthy), write a script that returns 0 only when all hold and pass its path: `--precondition "/path/to/ready.sh"`. The daemon exports `SUNDIAL_SCHEDULE_ID` and `SUNDIAL_LAST_FIRED_AT` into the precondition's environment, same as a poll trigger, so the script can scope itself.
+
+### The network special case
+
+The motivating case is "don't fire while the machine is offline." A connectivity check makes a good precondition — fast, unambiguous exit code:
+
+```bash
+sundial add cron --cron "0 9 * * *" \
+  --command "your-network-dependent-command" \
+  --precondition "curl -sf --max-time 5 -o /dev/null https://www.google.com/generate_204" \
+  --exec-timeout 10m
+```
+
+`generate_204` returns HTTP 204 with an empty body and is widely used as a captive-portal/connectivity probe; `curl -sf --max-time 5` exits non-zero on any failure (DNS, timeout, non-2xx), so a flaky or absent network defers the fire. A pure-offline check that avoids any external endpoint is `route -n get default >/dev/null 2>&1` (a default route exists) or a DNS lookup like `dscacheutil -q host -a name www.apple.com >/dev/null 2>&1`. The default backoff (`1m, 5m, 30m, 1h, 2h`) is well suited to transient outages; widen it with `--precondition-backoff` if your network recovers slowly. Pair the network-dependent **command** with `--exec-timeout` (see "Capping a command's runtime" above) so a fetch that connects and then hangs can't wedge the schedule.
 
 ## Recommended workflow
 
