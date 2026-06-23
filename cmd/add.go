@@ -30,7 +30,11 @@ var (
 	addDryRun      bool
 	addForce       bool
 	addRefresh     bool
-	addDetach      bool
+	addDetach                 bool
+	addExecTimeout            string
+	addPrecondition           string
+	addPreconditionBackoff    string
+	addPreconditionMaxElapsed string
 )
 
 func init() {
@@ -43,6 +47,28 @@ func init() {
 	addCmd.PersistentFlags().BoolVar(&addForce, "force", false, "skip duplicate detection")
 	addCmd.PersistentFlags().BoolVar(&addRefresh, "refresh", false, "update existing schedule if name matches (requires --name)")
 	addCmd.PersistentFlags().BoolVar(&addDetach, "detach", false, "fire-and-forget: spawn command without waiting (no exit code captured)")
+	addCmd.PersistentFlags().StringVar(&addExecTimeout, "exec-timeout", "", "per-command wall-clock timeout (Go duration, e.g. \"30m\"); empty = unbounded")
+	addCmd.PersistentFlags().StringVar(&addPrecondition, "precondition", "", "readiness-gate shell command run before each fire; exit 0 = proceed, non-zero = defer and retry with backoff")
+	addCmd.PersistentFlags().StringVar(&addPreconditionBackoff, "precondition-backoff", "", "comma-separated retry backoff for a deferred --precondition (Go durations, e.g. \"1m,5m,30m,1h,2h\"); last entry repeats as cap; empty = daemon default")
+	addCmd.PersistentFlags().StringVar(&addPreconditionMaxElapsed, "precondition-max-elapsed", "", "give-up budget for a deferred --precondition (Go duration); when set, terminate by elapsed budget in addition to the next-regular-fire bound")
+}
+
+// parsePreconditionBackoff splits the comma-separated --precondition-backoff
+// flag into individual duration strings, trimming whitespace and dropping empty
+// entries. It does not validate the durations — validateSharedAddFlags does.
+func parsePreconditionBackoff(s string) []string {
+	if strings.TrimSpace(s) == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // validateSharedAddFlags checks the flags that apply to every add subcommand.
@@ -56,6 +82,31 @@ func validateSharedAddFlags() {
 	if addRefresh && addName == "" {
 		addError("--refresh requires --name")
 	}
+	if addExecTimeout != "" {
+		if _, err := time.ParseDuration(addExecTimeout); err != nil {
+			addError(fmt.Sprintf("--exec-timeout %q is not a valid duration (e.g. \"30m\", \"90s\"): %s", addExecTimeout, err))
+		}
+		// A detached command's exit is never captured, so there is nothing to
+		// time out — the daemon returns the moment the process is spawned.
+		if addDetach {
+			addError("--exec-timeout cannot be combined with --detach (a detached command has no captured exit, so a timeout has nothing to enforce)")
+		}
+	}
+	// --precondition-backoff / --precondition-max-elapsed only have meaning when a
+	// precondition is set; flag them rather than silently ignoring.
+	if addPrecondition == "" && (addPreconditionBackoff != "" || addPreconditionMaxElapsed != "") {
+		addError("--precondition-backoff and --precondition-max-elapsed require --precondition")
+	}
+	for _, d := range parsePreconditionBackoff(addPreconditionBackoff) {
+		if _, err := time.ParseDuration(d); err != nil {
+			addError(fmt.Sprintf("--precondition-backoff entry %q is not a valid duration (e.g. \"1m\", \"30m\", \"2h\"): %s", d, err))
+		}
+	}
+	if addPreconditionMaxElapsed != "" {
+		if _, err := time.ParseDuration(addPreconditionMaxElapsed); err != nil {
+			addError(fmt.Sprintf("--precondition-max-elapsed %q is not a valid duration (e.g. \"2h\", \"90m\"): %s", addPreconditionMaxElapsed, err))
+		}
+	}
 }
 
 // applySharedAddParams writes shared flag values into params.
@@ -66,6 +117,10 @@ func applySharedAddParams(params *model.AddParams) {
 	params.Force = addForce
 	params.Refresh = addRefresh
 	params.Detach = addDetach
+	params.ExecTimeout = addExecTimeout
+	params.Precondition = addPrecondition
+	params.PreconditionBackoff = parsePreconditionBackoff(addPreconditionBackoff)
+	params.PreconditionMaxElapsed = addPreconditionMaxElapsed
 }
 
 // dispatchAdd routes to dry-run preview or daemon RPC.
@@ -114,6 +169,18 @@ func runAddDryRun(params model.AddParams, cfg model.TriggerConfig, displayTimezo
 	}
 	if params.Detach {
 		fmt.Printf("detach:     true (fire-and-forget; no exit code captured)\n")
+	}
+	if params.ExecTimeout != "" {
+		fmt.Printf("exec_timeout: %s (command killed if it runs longer)\n", params.ExecTimeout)
+	}
+	if params.Precondition != "" {
+		fmt.Printf("precondition: %s (exit 0 = proceed; non-zero = defer and retry)\n", params.Precondition)
+		if len(params.PreconditionBackoff) > 0 {
+			fmt.Printf("precondition_backoff: %s\n", strings.Join(params.PreconditionBackoff, ", "))
+		}
+		if params.PreconditionMaxElapsed != "" {
+			fmt.Printf("precondition_max_elapsed: %s\n", params.PreconditionMaxElapsed)
+		}
 	}
 }
 

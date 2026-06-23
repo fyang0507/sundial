@@ -68,6 +68,16 @@ type AddParams struct {
 	Refresh        bool        `json:"refresh,omitempty"` // update existing schedule in place if name matches
 	Once           bool        `json:"once,omitempty"`    // fire once then complete
 	Detach         bool        `json:"detach,omitempty"`  // fire-and-forget: spawn without waiting for exit
+	ExecTimeout    string      `json:"exec_timeout,omitempty"` // per-command wall-clock timeout (Go duration); empty = unbounded
+	// Precondition is a readiness-gate shell command run before every fire; exit
+	// 0 = proceed, non-zero = defer-and-retry with backoff. Empty = no gate.
+	Precondition string `json:"precondition,omitempty"`
+	// PreconditionBackoff overrides the daemon default backoff schedule for this
+	// schedule (Go durations). Empty => daemon default.
+	PreconditionBackoff []string `json:"precondition_backoff,omitempty"`
+	// PreconditionMaxElapsed overrides the give-up budget (Go duration). Empty =>
+	// default termination (bounded by next regular fire / daemon at-deadline budget).
+	PreconditionMaxElapsed string `json:"precondition_max_elapsed,omitempty"`
 }
 
 // AddResult is returned by a successful "add" RPC.

@@ -94,6 +94,12 @@ func applyDefaults(cfg *model.Config) {
 	if cfg.State.LogsPath == "" {
 		cfg.State.LogsPath = model.DefaultLogsPath
 	}
+	if len(cfg.Daemon.PreconditionBackoff) == 0 {
+		cfg.Daemon.PreconditionBackoff = model.DefaultPreconditionBackoff
+	}
+	if cfg.Daemon.PreconditionMaxElapsed == "" {
+		cfg.Daemon.PreconditionMaxElapsed = model.DefaultPreconditionMaxElapsed
+	}
 }
 
 // expandPaths expands ~ to the user's home directory in all path fields.

@@ -25,6 +25,13 @@ const ConfigTemplate = `# Daemon options for sundial. The data_repo itself is re
 # daemon:
 #   log_level: info                      # debug | info | warn | error
 #   log_file: "~/Library/Logs/sundial/sundial.log"
+#   # Default backoff schedule for retrying a deferred --precondition (Go
+#   # durations). The last entry repeats as the cap. Per-schedule
+#   # --precondition-backoff overrides this for a single schedule.
+#   precondition_backoff: ["1m", "5m", "30m", "1h", "2h"]
+#   # Give-up budget for a precondition on a one-off 'at' schedule (no next
+#   # regular fire to bound retries). Defaults to the backoff cap.
+#   precondition_max_elapsed: "2h"
 #
 # state:
 #   path: "~/.config/sundial/state/"     # runtime state (daemon-managed, not portable)
