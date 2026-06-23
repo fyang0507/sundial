@@ -22,13 +22,13 @@ Sundial schedules shell commands. Because modern coding agents (Codex, Claude Co
 
 ```bash
 git clone https://github.com/fyang0507/sundial && cd sundial
-cp sundial.config.dev.yaml.example sundial.config.dev.yaml
-vim sundial.config.dev.yaml   # set data_repo_path
+cp sundial.config.yaml.example sundial.config.yaml
+vim sundial.config.yaml   # set data_repo_path (plus optional daemon/state options)
 
 make start
 ```
 
-`make start` builds the binary, installs it to `PATH`, runs `sundial setup` against your data repo (writes `.agents/workspace.yaml`, scaffolds `<data_repo>/sundial/config.yaml`, syncs skills), starts the daemon, and registers it with launchd for auto-start on login. The launchd plist wraps the daemon with `caffeinate -i` so it holds a `PreventUserIdleSystemSleep` assertion — otherwise launchd suspends it with the system and fires are missed. Explicit user sleep (closing the lid) still works.
+`sundial.config.yaml` is the single config file; it lives in the repo root (not the data repo) and holds `data_repo_path` plus all `daemon:`/`state:` options. `make start` builds the binary, installs it to `PATH`, bakes the absolute path of `sundial.config.yaml` into the launchd plist as `sundial daemon --config <abspath>`, runs `sundial setup` against your data repo (writes `.agents/workspace.yaml`, syncs skills), starts the daemon, and registers it with launchd for auto-start on login. It no longer scaffolds any config inside the data repo. The launchd plist wraps the daemon with `caffeinate -i` so it holds a `PreventUserIdleSystemSleep` assertion — otherwise launchd suspends it with the system and fires are missed. Explicit user sleep (closing the lid) still works.
 
 Other targets: `make stop`, `make restart`, `make test`, `make vet`.
 

@@ -22,10 +22,11 @@ func (m *mockRunner) Run(name string, args ...string) ([]byte, error) {
 
 func TestGeneratePlist(t *testing.T) {
 	cfg := PlistConfig{
-		Label:        Label,
-		BinaryPath:   "/usr/local/bin/sundial",
-		LogPath:      "/tmp/sundial.log",
-		DataRepoPath: "/home/user/data-repo",
+		Label:          Label,
+		BinaryPath:     "/usr/local/bin/sundial",
+		LogPath:        "/tmp/sundial.log",
+		DataRepoPath:   "/home/user/data-repo",
+		ConfigFilePath: "/home/user/sundial/sundial.config.yaml",
 	}
 
 	data, err := GeneratePlist(cfg)
@@ -46,18 +47,26 @@ func TestGeneratePlist(t *testing.T) {
 		t.Error("plist missing closing </plist> tag")
 	}
 
-	// Verify expected fields are present.
+	// Verify expected fields are present. The daemon is started with --config
+	// pointing at the single config file (data_repo_path lives inside it); the
+	// data repo path still appears as the WorkingDirectory.
 	checks := map[string]string{
-		"Label":           "<string>" + Label + "</string>",
-		"BinaryPath":      "<string>/usr/local/bin/sundial</string>",
-		"LogPath":         "<string>/tmp/sundial.log</string>",
-		"DataRepoPath":    "<string>/home/user/data-repo</string>",
-		"RunAtLoad":       "<true/>",
-		"KeepAlive":       "<true/>",
-		"daemon arg":      "<string>daemon</string>",
-		"--data-repo arg": "<string>--data-repo</string>",
-		"caffeinate":      "<string>/usr/bin/caffeinate</string>",
-		"caffeinate flag": "<string>-i</string>",
+		"Label":            "<string>" + Label + "</string>",
+		"BinaryPath":       "<string>/usr/local/bin/sundial</string>",
+		"LogPath":          "<string>/tmp/sundial.log</string>",
+		"WorkingDirectory": "<string>/home/user/data-repo</string>",
+		"RunAtLoad":        "<true/>",
+		"KeepAlive":        "<true/>",
+		"daemon arg":       "<string>daemon</string>",
+		"--config arg":     "<string>--config</string>",
+		"ConfigFilePath":   "<string>/home/user/sundial/sundial.config.yaml</string>",
+		"caffeinate":       "<string>/usr/bin/caffeinate</string>",
+		"caffeinate flag":  "<string>-i</string>",
+	}
+
+	// The plist no longer passes --data-repo (config file carries it).
+	if strings.Contains(output, "<string>--data-repo</string>") {
+		t.Error("plist should not contain --data-repo argument anymore")
 	}
 
 	for name, needle := range checks {
@@ -95,10 +104,11 @@ func TestInstall(t *testing.T) {
 
 	// Override PlistDir for this test by writing directly.
 	cfg := PlistConfig{
-		Label:        Label,
-		BinaryPath:   "/usr/local/bin/sundial",
-		LogPath:      filepath.Join(tmpDir, "sundial.log"),
-		DataRepoPath: tmpDir,
+		Label:          Label,
+		BinaryPath:     "/usr/local/bin/sundial",
+		LogPath:        filepath.Join(tmpDir, "sundial.log"),
+		DataRepoPath:   tmpDir,
+		ConfigFilePath: filepath.Join(tmpDir, "sundial.config.yaml"),
 	}
 
 	// Generate plist content to verify later.

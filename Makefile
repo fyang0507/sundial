@@ -1,7 +1,9 @@
 BINARY   := sundial
 PREFIX   := $(shell go env GOPATH)/bin
-DEV_YAML := $(CURDIR)/sundial.config.dev.yaml
-DATA_REPO := $(shell grep '^data_repo_path:' "$(DEV_YAML)" 2>/dev/null | sed 's/data_repo_path: *"\([^"]*\)".*/\1/' | sed "s|~|$$HOME|")
+# The single, unified config file lives in this source repo. The daemon reads
+# it via --config; the Makefile reads data_repo_path out of it for dev commands.
+CONFIG   := $(CURDIR)/sundial.config.yaml
+DATA_REPO := $(shell grep '^data_repo_path:' "$(CONFIG)" 2>/dev/null | sed 's/data_repo_path: *"\([^"]*\)".*/\1/' | sed "s|~|$$HOME|")
 # Default daemon log file — matches model.DefaultLogFile and the launchd plist's
 # StandardOut/ErrorPath, so a `make start` (dev) daemon and a launchd-started one
 # log to the same place. (A custom log_file in the data-repo config is not picked
@@ -22,16 +24,17 @@ uninstall:
 	rm -f $(PREFIX)/$(BINARY)
 	@echo "$(BINARY) removed from $(PREFIX)"
 
-# Scaffold the data repo (workspace.yaml, sundial/config.yaml, skills sync).
+# Scaffold the data repo (workspace.yaml + skills sync). Daemon config now
+# lives in this repo's sundial.config.yaml, not the data repo.
 # Idempotent — safe to rerun.
 setup: install
 ifndef DATA_REPO
-	$(error data_repo_path not set in $(DEV_YAML); copy sundial.config.dev.yaml.example and fill it in)
+	$(error data_repo_path not set in $(CONFIG); copy sundial.config.yaml.example and fill it in)
 endif
 	SUNDIAL_DATA_REPO="$(DATA_REPO)" sundial setup
 
-# Start the daemon in the background using the data repo resolved from
-# sundial.config.dev.yaml, and register with launchd so it auto-starts on
+# Start the daemon in the background using the unified config file
+# (sundial.config.yaml), and register with launchd so it auto-starts on
 # login. The installed plist wraps the daemon with `caffeinate -i` to
 # prevent idle sleep — a scheduler that sleeps misses fires.
 # The background daemon appends to LOG_FILE (not /dev/null) so a dev-started
@@ -41,12 +44,12 @@ start: setup
 		echo "daemon is already running"; \
 	else \
 		mkdir -p "$(dir $(LOG_FILE))"; \
-		SUNDIAL_DATA_REPO="$(DATA_REPO)" sundial daemon >>"$(LOG_FILE)" 2>&1 & \
+		sundial daemon --config "$(CONFIG)" >>"$(LOG_FILE)" 2>&1 & \
 		sleep 1; \
 		echo "daemon started (pid $$!), logging to $(LOG_FILE)"; \
 	fi
-	SUNDIAL_DATA_REPO="$(DATA_REPO)" sundial install
-	@SUNDIAL_DATA_REPO="$(DATA_REPO)" sundial health
+	sundial install --config "$(CONFIG)"
+	@sundial health
 
 # Stop the daemon.
 stop:
