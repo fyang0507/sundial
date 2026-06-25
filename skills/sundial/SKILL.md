@@ -47,3 +47,9 @@ If you're an agent (or building a tool that wraps one) and want to invoke a fres
 `sundial <command> --help` is the canonical flag-and-syntax reference for each trigger. For the behavior and contracts `--help` can't convey — the poll trigger contract, the `--detach` + `--refresh` callback pattern, `--exec-timeout` and `--precondition` readiness gates, duplicate detection, inspecting state, the data-repo model, git sync, diagnostics, and how to give feedback:
 
 → **[scheduling.md](scheduling.md)** — enriches `--help` with contracts and operational detail.
+
+## Tool integrations
+
+If you are building another tool or agent runner that uses Sundial as its scheduling primitive:
+
+→ **[integrating.md](integrating.md)** — explains the shared data-repo layout, calling Sundial from another tool, poll-trigger callbacks, and session-resume patterns.

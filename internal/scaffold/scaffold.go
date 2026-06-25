@@ -9,16 +9,32 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 
 	"github.com/fyang0507/sundial/skills"
 )
 
-// CopySkills copies the embedded skills/sundial/ tree into
-// <dataRepo>/.agents/skills/sundial/. Existing files are overwritten so the
-// command is idempotent across upgrades.
+// CopySkills links the source skills/sundial/ tree into
+// <dataRepo>/.agents/skills/sundial/ when running from a checkout. If the
+// source tree is unavailable, it falls back to copying the embedded skill tree.
 func CopySkills(dataRepo string) error {
 	const srcRoot = "sundial"
 	dest := filepath.Join(dataRepo, ".agents", "skills", "sundial")
+	if source, ok := sourceSkillDir(); ok {
+		if err := os.RemoveAll(dest); err != nil {
+			return fmt.Errorf("removing existing %s: %w", dest, err)
+		}
+		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+			return fmt.Errorf("creating %s: %w", filepath.Dir(dest), err)
+		}
+		if err := os.Symlink(source, dest); err != nil {
+			return fmt.Errorf("linking %s -> %s: %w", dest, source, err)
+		}
+		return nil
+	}
+	if err := os.RemoveAll(dest); err != nil {
+		return fmt.Errorf("removing existing %s: %w", dest, err)
+	}
 	if err := os.MkdirAll(dest, 0o755); err != nil {
 		return fmt.Errorf("creating %s: %w", dest, err)
 	}
@@ -44,4 +60,16 @@ func CopySkills(dataRepo string) error {
 		}
 		return nil
 	})
+}
+
+func sourceSkillDir() (string, bool) {
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		return "", false
+	}
+	source := filepath.Clean(filepath.Join(filepath.Dir(file), "..", "..", "skills", "sundial"))
+	if info, err := os.Stat(source); err == nil && info.IsDir() {
+		return source, true
+	}
+	return "", false
 }
