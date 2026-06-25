@@ -24,7 +24,7 @@ uninstall:
 	rm -f $(PREFIX)/$(BINARY)
 	@echo "$(BINARY) removed from $(PREFIX)"
 
-# Scaffold the data repo (workspace.yaml + skills sync). Daemon config now
+# Scaffold the data repo (workspace.yaml + Sundial agent skill symlink). Daemon config now
 # lives in this repo's sundial.config.yaml, not the data repo.
 # Idempotent — safe to rerun.
 setup: install

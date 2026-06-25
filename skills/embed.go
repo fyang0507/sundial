@@ -1,5 +1,5 @@
-// Package skills holds the SKILL.md tree that `sundial setup` syncs into the
-// .agents/skills/sundial/ directory of a data repo.
+// Package skills holds the SKILL.md tree that `sundial setup` installs under
+// .agents/skills/sundial/ in a data repo.
 //
 // Edit the markdown under skills/sundial/ and the updated contents are baked
 // into the binary at build time via go:embed.

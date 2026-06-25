@@ -14,10 +14,10 @@ import (
 	"github.com/fyang0507/sundial/skills"
 )
 
-// CopySkills links the source skills/sundial/ tree into
+// InstallSkillTree links the source skills/sundial/ tree into
 // <dataRepo>/.agents/skills/sundial/ when running from a checkout. If the
-// source tree is unavailable, it falls back to copying the embedded skill tree.
-func CopySkills(dataRepo string) error {
+// source tree is unavailable, it falls back to materializing the embedded tree.
+func InstallSkillTree(dataRepo string) error {
 	const srcRoot = "sundial"
 	dest := filepath.Join(dataRepo, ".agents", "skills", "sundial")
 	if source, ok := sourceSkillDir(); ok {

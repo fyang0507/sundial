@@ -28,7 +28,7 @@ vim sundial.config.yaml   # set data_repo_path (plus optional daemon/state optio
 make start
 ```
 
-`sundial.config.yaml` is the single config file; it lives in the repo root (not the data repo) and holds `data_repo_path` plus all `daemon:`/`state:` options. `make start` builds the binary, installs it to `PATH`, bakes the absolute path of `sundial.config.yaml` into the launchd plist as `sundial daemon --config <abspath>`, runs `sundial setup` against your data repo (writes `.agents/workspace.yaml`, syncs skills), starts the daemon, and registers it with launchd for auto-start on login. It no longer scaffolds any config inside the data repo. The launchd plist wraps the daemon with `caffeinate -i` so it holds a `PreventUserIdleSystemSleep` assertion — otherwise launchd suspends it with the system and fires are missed. Explicit user sleep (closing the lid) still works.
+`sundial.config.yaml` is the single config file; it lives in the repo root (not the data repo) and holds `data_repo_path` plus all `daemon:`/`state:` options. `make start` builds the binary, installs it to `PATH`, bakes the absolute path of `sundial.config.yaml` into the launchd plist as `sundial daemon --config <abspath>`, runs `sundial setup` against your data repo (writes `.agents/workspace.yaml`, installs the Sundial agent skill symlink), starts the daemon, and registers it with launchd for auto-start on login. It no longer scaffolds any config inside the data repo. The launchd plist wraps the daemon with `caffeinate -i` so it holds a `PreventUserIdleSystemSleep` assertion — otherwise launchd suspends it with the system and fires are missed. Explicit user sleep (closing the lid) still works.
 
 Other targets: `make stop`, `make restart`, `make test`, `make vet`.
 
@@ -72,7 +72,7 @@ Concretely: watching for an inbound SMS reply. A heartbeat loop wakes the agent 
 
 Two audiences, two doc trees.
 
-**If you use or integrate with sundial** — an agent scheduling events, or an engineer building a tool on top of sundial as infrastructure — the skill tree is your entry point. `sundial setup` syncs it into every data repo so agents can discover it next to the tools they already know.
+**If you use or integrate with sundial** — an agent scheduling events, or an engineer building a tool on top of sundial as infrastructure — the skill tree is your entry point. `sundial setup` installs it under every data repo so agents can discover it next to the tools they already know.
 
 - [`skills/sundial/SKILL.md`](skills/sundial/SKILL.md) — catalog. Trigger-type overviews, the command-agnostic mental model, and signposts to the rest of the tree.
 - [`skills/sundial/setup.md`](skills/sundial/setup.md) — one-time initialization (daemon, data repo).

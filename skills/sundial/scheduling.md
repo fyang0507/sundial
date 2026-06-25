@@ -145,7 +145,7 @@ Sundial, your tool, and any other agent tooling in the same stack share one git 
     schedules/            # one JSON per schedule — the definition only
 ```
 
-The data repo holds **only data** — schedules, the workspace marker, and synced skills. Daemon options are not stored here; they live in `<sundial-repo>/sundial.config.yaml`. Runtime state (`~/.config/sundial/state/`) and run logs (`~/.config/sundial/logs/`) stay local to the machine — they are not part of the data repo. This split is deliberate: definitions are git-synced so they survive restarts and travel across machines; volatile runtime state stays local to keep git history clean.
+The data repo holds **only data** — schedules, the workspace marker, and agent skill symlinks. Daemon options are not stored here; they live in `<sundial-repo>/sundial.config.yaml`. Runtime state (`~/.config/sundial/state/`) and run logs (`~/.config/sundial/logs/`) stay local to the machine — they are not part of the data repo. This split is deliberate: definitions are git-synced so they survive restarts and travel across machines; volatile runtime state stays local to keep git history clean.
 
 Conventions to follow when adding your own tool to this shared layout:
 

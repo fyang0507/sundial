@@ -24,14 +24,14 @@ codex exec \
   --model <chosen-model> \
   -c model_reasoning_effort="low" \
   --dangerously-bypass-approvals-and-sandbox \
-  "Run <skill-name> now." >>/path/to/local/run.log 2>&1
+  "Launched by the sundial scheduler — this is the scheduled fire. Run <skill-name> now; execute directly, don't reschedule." >>/path/to/local/run.log 2>&1
 
 codex exec resume <thread_id> \
   --cd /path/to/workspace \
   --model <chosen-model> \
   -c model_reasoning_effort="low" \
   --dangerously-bypass-approvals-and-sandbox \
-  "continue where we left off" >>/path/to/local/run.log 2>&1
+  "The sundial scheduler resumed this session at the scheduled time — continue where we left off and finish the task now." >>/path/to/local/run.log 2>&1
 ```
 
 Do **not** use `codex exec --json` as the default scheduled-run pattern.
@@ -60,19 +60,49 @@ Two levers, set them both:
 
 When you resume a session, the model and effort are per-invocation flags on the resuming command, not inherited from the original session — restate them on every scheduled `--command`.
 
-## Keep prompts minimal
+## Make the prompt say "you are the scheduled fire — execute now"
 
-When a workflow has a skill or runbook, the scheduled prompt should usually be
-just enough to select it:
+The fired session starts **fresh and context-free**: it has no idea a scheduler
+launched it, no idea that *this moment* is the scheduled time. Hand it a bare
+task ("Triage my inbox", "Publish the weekly digest") and it may reasonably
+conclude the work is still to be *arranged* — and schedule yet another sundial
+run to do it "later", postponing the task forever instead of doing it now. This
+is a real failure mode, not a hypothetical.
+
+Defuse it in the prompt. Every scheduled prompt must make two things explicit:
+
+1. **It was invoked by the sundial scheduler** — this run *is* the trigger firing.
+2. **It must execute the task directly, right now** — not re-schedule, defer, or
+   add another sundial entry to do it later.
 
 ```text
-Run <skill-name> now.
+You were launched by the sundial scheduler — this run is the scheduled trigger
+firing now. Execute <skill-name> immediately. Do not schedule or defer it; if a
+follow-up run is genuinely needed, only then arrange it after the task is done.
+```
+
+The one legitimate reason to touch sundial from inside a fired run is the
+`--detach` + `--refresh` self-rescheduling callback (see [scheduling.md](scheduling.md)) —
+re-arming a recurring schedule *after* completing this fire's work. Make the
+prompt distinguish "do the task, then re-arm" from "reschedule instead of doing
+the task."
+
+## Keep prompts minimal
+
+Beyond the scheduler framing above, when a workflow has a skill or runbook the
+scheduled prompt should be just enough to select it:
+
+```text
+You were launched by the sundial scheduler; this is the scheduled fire. Run
+<skill-name> now — execute it directly, don't reschedule it.
 ```
 
 Do not copy the whole runbook into the prompt. Repeating the same instructions
 inflates every recurring run, increases cost, and creates drift when the skill
 file changes. Put durable behavior in the skill, then schedule the smallest
-prompt that invokes it.
+prompt that invokes it — while still keeping the explicit "you are the scheduled
+fire, execute now" framing, which is about *the agent's situation*, not the task,
+and belongs in the prompt rather than the skill.
 
 ## Fresh vs. resume
 
@@ -106,6 +136,7 @@ A subtle point: the schedule file (and the git commit sundial pushes) embeds the
 
 ## Before you write the `--command`
 
+- **State that the scheduler fired this run, and to execute now.** The fired session is fresh and doesn't know it's the scheduled trigger; without this it may reschedule the task instead of doing it (see "Make the prompt say…" above).
 - **Always quote the nested prompt.** The command runs under a login shell. Use single quotes on the outer string and escape inner quotes as needed.
 - **Write outputs somewhere readable.** The future session has no conversational channel to reach the user. Log plain agent output to a local file, the data repo, or whatever external sink the user already watches.
 - **The daemon can't tell "agent exited cleanly" from "agent fell over".** It only sees the shell exit code. If you care about outcome visibility, have the prompt instruct the agent to write a status file.

@@ -16,11 +16,11 @@ var setupDataRepoFlag string
 
 var setupCmd = &cobra.Command{
 	Use:   "setup",
-	Short: "Scaffold sundial's side of the data repo (workspace marker, skills)",
+	Short: "Scaffold sundial's side of the data repo (workspace marker, agent skill symlink)",
 	Long: `Scaffold sundial in the data repo:
   - resolve data_repo (--data-repo / SUNDIAL_DATA_REPO)
   - write .agents/workspace.yaml with tools.sundial.version stamped
-  - sync embedded skills into <data_repo>/.agents/skills/sundial/
+  - install <data_repo>/.agents/skills/sundial as an agent skill symlink to the source skill tree
 
 Daemon configuration lives in the sundial source repo's sundial.config.yaml,
 not in the data repo — setup no longer writes any config there.
@@ -77,9 +77,9 @@ func runSetup(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
-	// 3. Sync skills.
-	if err := scaffold.CopySkills(dataRepo); err != nil {
-		fmt.Fprintf(os.Stderr, "Error syncing skills: %s\n", err)
+	// 3. Install agent skill symlink.
+	if err := scaffold.InstallSkillTree(dataRepo); err != nil {
+		fmt.Fprintf(os.Stderr, "Error installing agent skill symlink: %s\n", err)
 		os.Exit(1)
 	}
 

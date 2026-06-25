@@ -17,7 +17,7 @@ Sundial, your tool, and any other agent tooling in the same stack share one git 
   .agents/
     workspace.yaml        # shared registry; sundial stamps tools.sundial
     skills/
-      sundial/            # this skill tree, synced by `sundial setup`
+      sundial/            # this skill tree, installed by `sundial setup`
       <your-tool>/        # ship your own skill alongside sundial's
   sundial/
     config.yaml

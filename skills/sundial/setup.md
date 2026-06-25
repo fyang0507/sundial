@@ -10,7 +10,7 @@ Sundial is a long-running macOS daemon. If `which sundial` fails or `sundial hea
 cd <sundial-repo> && make start
 ```
 
-This builds, installs, scaffolds the data repo (workspace marker and skills sync), starts the daemon, and registers it with launchd (auto-start on login, wrapped with `caffeinate -i` so launchd doesn't suspend the daemon when the system idle-sleeps). The launchd plist runs `sundial daemon --config <abspath>`, where `<abspath>` is the absolute path of `sundial.config.yaml` in the sundial repo. Once running, all `sundial` commands work from any directory.
+This builds, installs, scaffolds the data repo (workspace marker and Sundial agent skill symlink), starts the daemon, and registers it with launchd (auto-start on login, wrapped with `caffeinate -i` so launchd doesn't suspend the daemon when the system idle-sleeps). The launchd plist runs `sundial daemon --config <abspath>`, where `<abspath>` is the absolute path of `sundial.config.yaml` in the sundial repo. Once running, all `sundial` commands work from any directory.
 
 `sundial health --json` reports the resolved `data_repo`, the `config` path, the daemon pid, and any `pending_pushes`. Use it to confirm which data repo the running daemon is attached to.
 
@@ -23,11 +23,11 @@ Sundial reads a single config file, `sundial.config.yaml`, that lives in the **s
 3. `./sundial.config.yaml` in the current directory
 4. `sundial.config.yaml` next to the running binary
 
-`data_repo_path` from that file points at the shared **data repo** — the same git repo used by other agent tooling, holding only schedules, `.agents/workspace.yaml`, and synced skills. Override the path with the `SUNDIAL_DATA_REPO` environment variable or the `--data-repo` flag.
+`data_repo_path` from that file points at the shared **data repo** — the same git repo used by other agent tooling, holding only schedules, `.agents/workspace.yaml`, and agent skill symlinks. Override the path with the `SUNDIAL_DATA_REPO` environment variable or the `--data-repo` flag.
 
 ## Scaffolding a new data repo
 
-Run `sundial setup --data-repo <path>` to scaffold a new data repo. It writes `.agents/workspace.yaml` (stamping `tools.sundial.version`) and syncs this skill tree into `<data_repo>/.agents/skills/sundial/`. No config is written into the data repo — daemon options live in `<sundial-repo>/sundial.config.yaml`. Idempotent — safe to re-run after upgrades.
+Run `sundial setup --data-repo <path>` to scaffold a new data repo. It writes `.agents/workspace.yaml` (stamping `tools.sundial.version`) and installs `<data_repo>/.agents/skills/sundial/` as an agent skill symlink to this skill tree. No config is written into the data repo — daemon options live in `<sundial-repo>/sundial.config.yaml`. Idempotent — safe to re-run after upgrades.
 
 ## Waking the Mac for due schedules (optional)
 
