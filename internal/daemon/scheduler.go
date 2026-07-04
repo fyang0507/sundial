@@ -82,6 +82,11 @@ func (d *Daemon) runLoop() {
 		select {
 		case <-timer.C:
 			maybeReconcileGap(time.Now())
+			// Re-detect the machine timezone before firing so follow-local
+			// active-hours windows track a mid-run zone change (e.g. laptop
+			// traveled NYC -> SFO). Cheap when unchanged; recomputes windows and
+			// re-clamps NextFireAt when it changed.
+			d.maybeReconcileTimezone()
 			// Always attempt to fire: a normally-late tick still has due
 			// schedules, and the within-grace misses left in the past by the
 			// gap reconciler need firing here.
@@ -170,11 +175,17 @@ func (d *Daemon) fireDueSchedules() {
 			defer d.wg.Done()
 			defer sched.mu.Unlock()
 			outcome := d.execute(sched)
-			if outcome.Deferred {
+			switch {
+			case outcome.Suppressed:
+				// The fire landed outside active hours: skip the command and defer
+				// to the next window opening. Not a precondition deferral (no
+				// backoff), not a normal advance (the intended slot never ran).
+				d.suppressFire(sched, intendedFire)
+			case outcome.Deferred:
 				// A precondition held the fire back: arrange a backoff retry (or
 				// give up) instead of advancing the regular schedule.
 				d.deferPrecondition(sched, intendedFire)
-			} else {
+			default:
 				d.advanceSchedule(sched)
 			}
 			d.signalWake()
@@ -205,7 +216,17 @@ func (d *Daemon) advanceSchedule(sched *activeSchedule) {
 		return
 	}
 
-	next := sched.trigger.NextFireTime(time.Now())
+	now := time.Now()
+	raw := sched.trigger.NextFireTime(now)
+	next, deferred := sched.window.Clamp(raw)
+
+	// If the next natural slot fell outside the active-hours window, it was
+	// deferred to the window opening. Record it as a distinct "suppressed" run
+	// so the operator can see the fire was held back by active hours rather than
+	// having silently vanished — scheduled_for is the slot we skipped.
+	if deferred {
+		d.logSuppressed(sched, raw, next)
+	}
 
 	d.mu.Lock()
 	sched.runtime.NextFireAt = next
@@ -213,6 +234,53 @@ func (d *Daemon) advanceSchedule(sched *activeSchedule) {
 
 	if err := d.runtimeStore.Write(sched.runtime); err != nil {
 		log.Printf("WARN: schedule %s: failed to persist runtime after fire: %v",
+			sched.desired.ID, err)
+	}
+}
+
+// logSuppressed appends a "suppressed" run-log entry recording that the fire due
+// at scheduledFor was held back by the active-hours window and deferred to
+// deferredTo. It is best-effort — a failed append is logged but never blocks the
+// schedule from advancing.
+func (d *Daemon) logSuppressed(sched *activeSchedule, scheduledFor, deferredTo time.Time) {
+	window := sched.window.Describe()
+	log.Printf("schedule %s (%s): fire at %s outside active hours %s, deferred to %s",
+		sched.desired.ID, sched.desired.Name,
+		scheduledFor.Format(time.RFC3339), window,
+		deferredTo.Format(time.RFC3339))
+
+	entry := &model.RunLogEntry{
+		Timestamp:    time.Now(),
+		Type:         model.LogTypeSuppressed,
+		ScheduleID:   sched.desired.ID,
+		Reason:       fmt.Sprintf("outside active hours %s (deferred to %s)", window, deferredTo.Format(time.RFC3339)),
+		ScheduledFor: &scheduledFor,
+	}
+	if err := d.runLogStore.Append(entry); err != nil {
+		log.Printf("WARN: schedule %s: failed to append suppressed entry: %v",
+			sched.desired.ID, err)
+	}
+}
+
+// suppressFire handles a fire that the active-hours gate held back: it records a
+// "suppressed" run-log entry and defers NextFireAt to the next window opening at
+// or after the intended slot. The command did not run and FireCount is
+// unchanged. This applies uniformly to every trigger type — including a one-off
+// `at`, which then fires (once) when the window opens rather than being dropped.
+//
+// This is the safety-net counterpart to advanceSchedule's clamp: NextFireAt is
+// normally clamped into the window before the fire, so this path is reached only
+// for a within-grace missed fire or a window that shifted between advance and
+// fire. Caller (fireDueSchedules) holds sched.mu across the whole cycle.
+func (d *Daemon) suppressFire(sched *activeSchedule, intendedFire time.Time) {
+	deferredTo := sched.window.NextOpen(intendedFire)
+	d.logSuppressed(sched, intendedFire, deferredTo)
+
+	d.mu.Lock()
+	sched.runtime.NextFireAt = deferredTo
+	d.mu.Unlock()
+	if err := d.runtimeStore.Write(sched.runtime); err != nil {
+		log.Printf("WARN: schedule %s: failed to persist runtime after suppression: %v",
 			sched.desired.ID, err)
 	}
 }
@@ -254,8 +322,10 @@ func (d *Daemon) deferPrecondition(sched *activeSchedule, intendedFire time.Time
 	wait := backoff[min(sched.runtime.PreconditionAttempts, len(backoff)-1)]
 	nextRetry := now.Add(wait)
 
-	// Next regular fire (zero for a one-off `at` whose single fire has passed).
-	nextRegularFire := sched.trigger.NextFireTime(now)
+	// Next regular fire (zero for a one-off `at` whose single fire has passed),
+	// clamped to the active-hours window so the give-up bound and the eventual
+	// advance both target the next window-eligible slot.
+	nextRegularFire, _ := sched.nextFire(now)
 	hasRegularFire := !nextRegularFire.IsZero()
 
 	// Evaluate the give-up conditions.

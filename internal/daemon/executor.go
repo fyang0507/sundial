@@ -23,11 +23,15 @@ const maxOutputCapture = 10 * 1024 // 10 KB
 //   - Executed: the main command ran (FireCount bumped); advance normally.
 //   - Deferred: a precondition held the fire back; arrange a backoff retry
 //     instead of advancing the regular schedule.
-//   - neither set: a gate (poll trigger check) skipped the command without it
+//   - Suppressed: the fire landed outside the active-hours window; skip the
+//     command and defer NextFireAt to the next window opening (not a
+//     precondition deferral — there is no backoff sequence).
+//   - none set: a gate (poll trigger check) skipped the command without it
 //     being a precondition deferral; advance the schedule as usual.
 type ExecuteOutcome struct {
-	Executed bool
-	Deferred bool
+	Executed   bool
+	Deferred   bool
+	Suppressed bool
 }
 
 // ExecutionResult holds the outcome of running a schedule's command.
@@ -61,6 +65,18 @@ type ExecutionResult struct {
 // Returns an ExecuteOutcome describing what happened so advanceSchedule can
 // branch (a deferral must not advance the regular schedule).
 func (d *Daemon) execute(sched *activeSchedule) ExecuteOutcome {
+	// Active-hours gate: the OUTERMOST suppression, ahead of even the
+	// precondition. NextFireAt is normally clamped into the window before we get
+	// here, so this rarely triggers — it is the safety net for a within-grace
+	// missed fire left in the past during closed hours, or a window that moved
+	// (DST / refresh) between the advance and the fire. When it fires, the caller
+	// defers NextFireAt to the next window opening; the command never runs.
+	if sched.window != nil && !sched.window.Contains(time.Now()) {
+		log.Printf("schedule %s (%s): due outside active hours %s, suppressing fire",
+			sched.desired.ID, sched.desired.Name, sched.window.Describe())
+		return ExecuteOutcome{Suppressed: true}
+	}
+
 	// Precondition gate: the outermost readiness check, applied to every trigger
 	// type before the poll check and before the main command. A non-zero exit
 	// defers the fire (no execution, no FireCount bump) and signals the caller to

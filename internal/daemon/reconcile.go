@@ -4,6 +4,7 @@ import (
 	"log"
 	"time"
 
+	"github.com/fyang0507/sundial/internal/localtz"
 	"github.com/fyang0507/sundial/internal/model"
 	"github.com/fyang0507/sundial/internal/trigger"
 )
@@ -56,11 +57,13 @@ func (d *Daemon) reconcile(isStartup bool) error {
 				continue
 			}
 
+			window := d.buildWindow(ds)
+
 			if rs == nil {
 				// No runtime -> create one.
 				nextFire := time.Time{} // zero for paused
 				if ds.Status == model.StatusActive {
-					nextFire = trig.NextFireTime(time.Now())
+					nextFire, _ = window.Clamp(trig.NextFireTime(time.Now()))
 				}
 				rs = &model.RuntimeState{
 					ID:         id,
@@ -79,6 +82,7 @@ func (d *Daemon) reconcile(isStartup bool) error {
 				desired: ds,
 				runtime: rs,
 				trigger: trig,
+				window:  window,
 			}
 			activeIDs[id] = struct{}{}
 
@@ -127,6 +131,86 @@ func (d *Daemon) reconcile(isStartup bool) error {
 	return nil
 }
 
+// maybeReconcileTimezone re-reads the machine's local timezone and, when it has
+// changed since the last check, refreshes the daemon's tracked zone and
+// recomputes every follow-local active-hours window. It is called on each
+// run-loop tick; the common case (no change) costs only a getenv + readlink and
+// returns without taking d.mu.
+func (d *Daemon) maybeReconcileTimezone() {
+	name := localtz.Name()
+
+	d.localZoneMu.Lock()
+	changed := name != d.localZoneName
+	d.localZoneMu.Unlock()
+	if !changed {
+		return
+	}
+
+	newName, loc := localtz.Load()
+	d.localZoneMu.Lock()
+	d.localZoneName = newName
+	d.localZone = loc
+	d.localZoneMu.Unlock()
+
+	log.Printf("detected local timezone change to %s, recomputing follow-local active-hours windows", newName)
+	d.reconcileTimezone()
+}
+
+// reconcileTimezone rebuilds the daemon-wide active-hours window against the new
+// machine local zone and re-clamps every obeying schedule's next fire into it,
+// so "08:00-22:00" keeps meaning the operator's local morning-to-night after the
+// host changes zones. It is a no-op unless the global window follows local (an
+// explicit ActiveHoursTZ pins the window, so it must not travel).
+//
+// Schedules that opt out (IgnoreActiveHours) are skipped; paused schedules and
+// schedules mid precondition-backoff keep their NextFireAt (zero / retry instant)
+// but still get their window refreshed so the fire-time gate uses the new zone.
+func (d *Daemon) reconcileTimezone() {
+	ah := d.getActiveHours()
+	if ah == nil || ah.Timezone != "" {
+		return // no window, or a pinned window that must not travel
+	}
+
+	d.mu.Lock()
+	d.reclampSchedulesLocked(time.Now())
+	d.mu.Unlock()
+
+	d.signalWake()
+}
+
+// reclampSchedulesLocked rebuilds every schedule's effective active-hours window
+// from the current d.activeHours (and local zone) and re-clamps its NextFireAt
+// into the new window. It is the shared body behind both a timezone change and a
+// set-active-hours window change. Returns the number of schedules whose next
+// fire actually moved.
+//
+// Paused schedules, schedules with no pending fire, and those in
+// precondition-backoff keep their NextFireAt (only the window is refreshed so
+// the fire-time gate evaluates against the new window). Caller holds d.mu.
+func (d *Daemon) reclampSchedulesLocked(now time.Time) int {
+	moved := 0
+	for id, sched := range d.schedules {
+		sched.window = d.buildWindow(sched.desired)
+
+		if sched.desired.Status == model.StatusPaused ||
+			sched.runtime.NextFireAt.IsZero() ||
+			sched.runtime.PreconditionFirstDeferredAt != nil {
+			continue
+		}
+
+		next, _ := sched.nextFire(now)
+		if next.Equal(sched.runtime.NextFireAt) {
+			continue
+		}
+		sched.runtime.NextFireAt = next
+		if err := d.runtimeStore.Write(sched.runtime); err != nil {
+			log.Printf("WARN: schedule %s: failed to persist runtime after active-hours change: %v", id, err)
+		}
+		moved++
+	}
+	return moved
+}
+
 // reconcileMissedFires is the wake-path entry point for missed-fire handling.
 // It exists separately from reconcile() so the run loop can re-run the same
 // classification after a detected wall-clock gap (system sleep) WITHOUT
@@ -168,7 +252,26 @@ func (d *Daemon) handleMissedFires() {
 		}
 
 		nextFire := sched.runtime.NextFireAt
-		if nextFire.IsZero() || !nextFire.Before(now) {
+		if nextFire.IsZero() {
+			continue
+		}
+		if !nextFire.Before(now) {
+			// Future fire: not a missed fire. But if the operator enabled or
+			// changed the global active-hours window while the daemon was down, a
+			// persisted fire time may now fall outside it. Re-clamp it to the next
+			// window opening so `list`/`show` reflect the eligible time and the
+			// daemon doesn't wake for a slot the fire-time gate would only suppress.
+			// Skip precondition-backoff retries (their NextFireAt is a retry
+			// instant, not a trigger slot) — clamping those would corrupt the
+			// backoff schedule.
+			if sched.runtime.PreconditionFirstDeferredAt == nil {
+				if clamped, deferred := sched.window.Clamp(nextFire); deferred {
+					sched.runtime.NextFireAt = clamped
+					if err := d.runtimeStore.Write(sched.runtime); err != nil {
+						log.Printf("WARN: schedule %s: failed to persist runtime after active-hours re-clamp: %v", id, err)
+					}
+				}
+			}
 			continue
 		}
 
@@ -197,7 +300,7 @@ func (d *Daemon) handleMissedFires() {
 				d.completeSchedule(sched, model.CompletionTimeout)
 				continue
 			}
-			sched.runtime.NextFireAt = sched.trigger.NextFireTime(now)
+			sched.runtime.NextFireAt, _ = sched.nextFire(now)
 			if err := d.runtimeStore.Write(sched.runtime); err != nil {
 				log.Printf("WARN: schedule %s: failed to persist runtime after poll advance: %v", id, err)
 			}
@@ -236,7 +339,7 @@ func (d *Daemon) handleMissedFires() {
 			// cron/solar beyond grace: log the misses and advance NextFireAt to
 			// the next future fire so the catch-up fire is suppressed.
 			d.logMissedFires(sched, nextFire, now)
-			next := sched.trigger.NextFireTime(now)
+			next, _ := sched.nextFire(now)
 			sched.runtime.NextFireAt = next
 			if err := d.runtimeStore.Write(sched.runtime); err != nil {
 				log.Printf("WARN: schedule %s: failed to persist runtime after miss advance: %v", id, err)
@@ -344,7 +447,7 @@ func (d *Daemon) advanceAllSchedules() {
 		if sched.desired.Status == model.StatusPaused {
 			continue
 		}
-		next := sched.trigger.NextFireTime(now)
+		next, _ := sched.nextFire(now)
 		sched.runtime.NextFireAt = next
 		if err := d.runtimeStore.Write(sched.runtime); err != nil {
 			log.Printf("WARN: schedule %s: failed to persist runtime state: %v", id, err)

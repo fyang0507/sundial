@@ -8,14 +8,15 @@ import (
 
 // RPC method names.
 const (
-	MethodAdd     = "add"
-	MethodRemove  = "remove"
-	MethodPause   = "pause"
-	MethodUnpause = "unpause"
-	MethodList    = "list"
-	MethodShow    = "show"
-	MethodReload  = "reload"
-	MethodHealth  = "health"
+	MethodAdd            = "add"
+	MethodRemove         = "remove"
+	MethodPause          = "pause"
+	MethodUnpause        = "unpause"
+	MethodList           = "list"
+	MethodShow           = "show"
+	MethodReload         = "reload"
+	MethodHealth         = "health"
+	MethodSetActiveHours = "set_active_hours"
 )
 
 // RPCRequest is the envelope for CLI → daemon requests over the Unix socket.
@@ -78,6 +79,9 @@ type AddParams struct {
 	// PreconditionMaxElapsed overrides the give-up budget (Go duration). Empty =>
 	// default termination (bounded by next regular fire / daemon at-deadline budget).
 	PreconditionMaxElapsed string `json:"precondition_max_elapsed,omitempty"`
+	// IgnoreActiveHours exempts the schedule from the daemon-wide active-hours
+	// window so it fires at any hour (e.g. a 3am backup). Default false.
+	IgnoreActiveHours bool `json:"ignore_active_hours,omitempty"`
 }
 
 // AddResult is returned by a successful "add" RPC.
@@ -90,8 +94,15 @@ type AddResult struct {
 	Status      string `json:"status"`
 	SavedTo     string `json:"saved_to"`  // data repo file path
 	Committed   string `json:"committed"` // git commit message
-	Recovery    string `json:"recovery,omitempty"`
-	Warning     string `json:"warning,omitempty"`
+	// ActiveHours echoes the daemon-wide active-hours window this schedule will
+	// obey (e.g. "08:00-22:00 America/New_York"), empty when no window is set or
+	// the schedule opted out. IgnoreActiveHours is true when the schedule exempted
+	// itself. The CLI turns these into a reminder that the schedule is confined to
+	// the window (and how to override).
+	ActiveHours       string `json:"active_hours,omitempty"`
+	IgnoreActiveHours bool   `json:"ignore_active_hours,omitempty"`
+	Recovery          string `json:"recovery,omitempty"`
+	Warning           string `json:"warning,omitempty"`
 }
 
 // RemoveParams are the parameters for the "remove" RPC method.
@@ -145,6 +156,15 @@ type ScheduleSummary struct {
 	// surfaces a compact "[deferred]" tag to distinguish a schedule waiting
 	// on a precondition from one that is genuinely idle until its next fire.
 	Deferred bool `json:"deferred,omitempty"`
+	// ActiveHours is the compact human-readable form of the daemon-wide window
+	// this schedule obeys (e.g. "08:00-22:00 America/Los_Angeles"), empty when no
+	// global window is configured or the schedule opts out. Suppressed is true
+	// when the current wall-clock time is outside that window — the schedule is
+	// presently held back and NextFire is the next window opening. IgnoreActiveHours
+	// is true when the schedule is exempt from the global window (fires any hour).
+	ActiveHours       string `json:"active_hours,omitempty"`
+	Suppressed        bool   `json:"suppressed,omitempty"`
+	IgnoreActiveHours bool   `json:"ignore_active_hours,omitempty"`
 }
 
 // ListResult is returned by a successful "list" RPC.
@@ -198,6 +218,27 @@ type ShowResult struct {
 	PreconditionRetryAt string `json:"precondition_retry_at,omitempty"`
 }
 
+// SetActiveHoursParams are the parameters for the "set_active_hours" RPC. When
+// Clear is true the daemon-wide window is removed (Window/Timezone ignored).
+// Otherwise Window is "HH:MM-HH:MM" and Timezone is an optional IANA zone
+// (empty => follow the machine's local zone).
+type SetActiveHoursParams struct {
+	Window   string `json:"window,omitempty"`
+	Timezone string `json:"timezone,omitempty"`
+	Clear    bool   `json:"clear,omitempty"`
+}
+
+// SetActiveHoursResult is returned by a successful "set_active_hours" RPC.
+type SetActiveHoursResult struct {
+	// ActiveHours is the resolved window now in effect (e.g.
+	// "08:00-22:00 America/New_York"), empty when cleared.
+	ActiveHours string `json:"active_hours,omitempty"`
+	Cleared     bool   `json:"cleared,omitempty"`
+	// Reclamped is the number of active schedules whose next fire moved as a
+	// result of the new window.
+	Reclamped int `json:"reclamped"`
+}
+
 // ReloadResult is returned by a successful "reload" RPC.
 type ReloadResult struct {
 	Reconciled    int    `json:"reconciled"`     // schedules reconciled
@@ -218,6 +259,10 @@ type HealthResult struct {
 	LogFile       string `json:"log_file"`
 	Launchd       bool   `json:"launchd"`
 	ScheduleCount int    `json:"schedule_count"`
+	// ActiveHours is the daemon-wide firing window every schedule obeys by
+	// default (e.g. "08:00-22:00 America/New_York"), empty when none is
+	// configured. Schedules may opt out individually via --ignore-active-hours.
+	ActiveHours string `json:"active_hours,omitempty"`
 
 	// --- macOS pmset wake management ---
 	// WakeEnabled mirrors cfg.Daemon.Wake.Enabled (the opt-in toggle).

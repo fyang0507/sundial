@@ -13,7 +13,7 @@ import (
 )
 
 // newTestStores creates temp-dir-backed stores for testing.
-func newTestStores(t *testing.T) (string, *store.DesiredStore, *store.RuntimeStore, *store.RunLogStore) {
+func newTestStores(t *testing.T) (string, *store.DesiredStore, *store.RuntimeStore, *store.RunLogStore, *store.SettingsStore) {
 	t.Helper()
 
 	tmpDir := t.TempDir()
@@ -24,6 +24,7 @@ func newTestStores(t *testing.T) (string, *store.DesiredStore, *store.RuntimeSto
 	ds := store.NewDesiredStore(dataRepoDir)
 	rs := store.NewRuntimeStore(stateDir)
 	rl := store.NewRunLogStore(logsDir)
+	ss := store.NewSettingsStore(stateDir)
 
 	if err := ds.EnsureDir(); err != nil {
 		t.Fatal(err)
@@ -35,7 +36,7 @@ func newTestStores(t *testing.T) (string, *store.DesiredStore, *store.RuntimeSto
 		t.Fatal(err)
 	}
 
-	return dataRepoDir, ds, rs, rl
+	return dataRepoDir, ds, rs, rl, ss
 }
 
 // newTestDaemon creates a Daemon with real stores in temp dirs, suitable for
@@ -43,7 +44,7 @@ func newTestStores(t *testing.T) (string, *store.DesiredStore, *store.RuntimeSto
 func newTestDaemon(t *testing.T) *Daemon {
 	t.Helper()
 
-	dataRepoDir, ds, rs, rl := newTestStores(t)
+	dataRepoDir, ds, rs, rl, ss := newTestStores(t)
 
 	d := &Daemon{
 		cfg: &model.Config{
@@ -53,14 +54,15 @@ func newTestDaemon(t *testing.T) *Daemon {
 				LogsPath: "",
 			},
 		},
-		desiredStore: ds,
-		runtimeStore: rs,
-		runLogStore:  rl,
-		gitOps:       gitops.NewGitOps(dataRepoDir),
-		schedules:    make(map[string]*activeSchedule),
-		wake:         make(chan struct{}, 1),
-		quit:         make(chan struct{}),
-		done:         make(chan struct{}),
+		desiredStore:  ds,
+		runtimeStore:  rs,
+		runLogStore:   rl,
+		settingsStore: ss,
+		gitOps:        gitops.NewGitOps(dataRepoDir),
+		schedules:     make(map[string]*activeSchedule),
+		wake:          make(chan struct{}, 1),
+		quit:          make(chan struct{}),
+		done:          make(chan struct{}),
 	}
 
 	return d
@@ -676,9 +678,9 @@ func TestAdvanceSchedule_OnceCompletesDesiredState(t *testing.T) {
 
 	now := time.Now()
 	runtime := &model.RuntimeState{
-		ID:         "sch_once_c01",
-		NextFireAt: time.Now().Add(time.Hour),
-		FireCount:  1,
+		ID:          "sch_once_c01",
+		NextFireAt:  time.Now().Add(time.Hour),
+		FireCount:   1,
 		LastFiredAt: &now,
 	}
 	if err := d.runtimeStore.Write(runtime); err != nil {
@@ -1077,7 +1079,7 @@ func TestAdvanceSchedule_PollNotTimedOutContinues(t *testing.T) {
 	// Create a poll schedule with timeout still in the future.
 	desired := makePollDesired("sch_poll_to03", "poll-no-timeout", "true", "2m")
 	desired.CreatedAt = time.Now().Add(-1 * time.Hour) // created 1h ago
-	desired.Trigger.Timeout = "72h"                     // 72h timeout — still active
+	desired.Trigger.Timeout = "72h"                    // 72h timeout — still active
 	if err := d.desiredStore.Write(desired); err != nil {
 		t.Fatal(err)
 	}
