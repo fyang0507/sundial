@@ -525,6 +525,7 @@ func TestHandleAdd_InvalidTrigger(t *testing.T) {
 }
 
 func TestBuildSummary(t *testing.T) {
+	d := newTestDaemon(t)
 	desired := makeCronDesired("sch_sum01", "summary-test", "0 9 * * *")
 	trig, _ := trigger.ParseTrigger(desired.Trigger)
 	nextFire := trig.NextFireTime(time.Now())
@@ -543,7 +544,7 @@ func TestBuildSummary(t *testing.T) {
 		trigger: trig,
 	}
 
-	summary := buildSummary(sched)
+	summary := d.buildSummary(sched)
 
 	if summary.ID != "sch_sum01" {
 		t.Errorf("expected ID sch_sum01, got %s", summary.ID)

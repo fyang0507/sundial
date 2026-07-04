@@ -79,6 +79,16 @@ func (d *Daemon) Handle(method string, params json.RawMessage) (interface{}, *mo
 	case model.MethodHealth:
 		return d.handleHealth()
 
+	case model.MethodSetActiveHours:
+		var p model.SetActiveHoursParams
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, &model.RPCError{
+				Code:    model.RPCErrCodeInvalidParams,
+				Message: "invalid set_active_hours params: " + err.Error(),
+			}
+		}
+		return d.handleSetActiveHours(p)
+
 	default:
 		info := model.MethodNotFoundInfo{
 			Method:           method,
@@ -288,6 +298,7 @@ func (d *Daemon) handleAdd(p model.AddParams) (*model.AddResult, *model.RPCError
 		Precondition:           p.Precondition,
 		PreconditionBackoff:    p.PreconditionBackoff,
 		PreconditionMaxElapsed: p.PreconditionMaxElapsed,
+		IgnoreActiveHours:      p.IgnoreActiveHours,
 	}
 
 	filePath := d.desiredStore.FilePath(id)
@@ -308,8 +319,11 @@ func (d *Daemon) handleAdd(p model.AddParams) (*model.AddResult, *model.RPCError
 		return nil, d.gitPreconditionError(fmt.Errorf("git commit failed: %w", err))
 	}
 
-	// 7. Create RuntimeState, write to store.
-	nextFire := trig.NextFireTime(time.Now())
+	// 7. Create RuntimeState, write to store. Clamp the first fire into the
+	// active-hours window so a schedule created during closed hours does not fire
+	// immediately.
+	window := d.buildWindow(desired)
+	nextFire, _ := window.Clamp(trig.NextFireTime(time.Now()))
 	runtime := &model.RuntimeState{
 		ID:         id,
 		NextFireAt: nextFire,
@@ -342,6 +356,7 @@ func (d *Daemon) handleAdd(p model.AddParams) (*model.AddResult, *model.RPCError
 		desired: desired,
 		runtime: runtime,
 		trigger: trig,
+		window:  window,
 	}
 	d.mu.Unlock()
 	d.signalWake()
@@ -355,16 +370,18 @@ func (d *Daemon) handleAdd(p model.AddParams) (*model.AddResult, *model.RPCError
 	}
 
 	result := &model.AddResult{
-		ID:          id,
-		Name:        name,
-		Schedule:    trig.HumanDescription(),
-		NextFire:    nextFire.In(loc).Format("Mon Jan 2 3:04 PM MST"),
-		NextFireUTC: nextFire.UTC().Format(time.RFC3339),
-		Status:      "active",
-		SavedTo:     relPath,
-		Committed:   commitMsg,
-		Recovery:    recovery,
-		Warning:     warning,
+		ID:                id,
+		Name:              name,
+		Schedule:          trig.HumanDescription(),
+		NextFire:          nextFire.In(loc).Format("Mon Jan 2 3:04 PM MST"),
+		NextFireUTC:       nextFire.UTC().Format(time.RFC3339),
+		Status:            "active",
+		SavedTo:           relPath,
+		Committed:         commitMsg,
+		ActiveHours:       window.Describe(),
+		IgnoreActiveHours: desired.IgnoreActiveHours,
+		Recovery:          recovery,
+		Warning:           warning,
 	}
 
 	return result, nil
@@ -549,8 +566,8 @@ func (d *Daemon) handleUnpause(p model.PauseParams) (*model.PauseResult, *model.
 		return nil, d.gitPreconditionError(fmt.Errorf("git commit failed: %w", err))
 	}
 
-	// Recompute NextFireAt.
-	nextFire := sched.trigger.NextFireTime(time.Now())
+	// Recompute NextFireAt, clamped into the active-hours window.
+	nextFire, _ := sched.nextFire(time.Now())
 	d.mu.Lock()
 	sched.runtime.NextFireAt = nextFire
 	d.mu.Unlock()
@@ -592,7 +609,7 @@ func (d *Daemon) handleList() (*model.ListResult, *model.RPCError) {
 
 	schedules := make([]model.ScheduleSummary, 0, len(d.schedules))
 	for _, sched := range d.schedules {
-		summary := buildSummary(sched)
+		summary := d.buildSummary(sched)
 		schedules = append(schedules, summary)
 	}
 
@@ -609,7 +626,7 @@ func (d *Daemon) handleShow(p model.ShowParams) (*model.ShowResult, *model.RPCEr
 		return nil, d.notFoundError(p.ID)
 	}
 
-	summary := buildSummary(sched)
+	summary := d.buildSummary(sched)
 
 	// Count missed fires from run logs.
 	missedCount, err := d.runLogStore.MissedSince(sched.desired.ID, sched.desired.CreatedAt)
@@ -720,6 +737,14 @@ func (d *Daemon) handleHealth() (*model.HealthResult, *model.RPCError) {
 		wakeSudoersHint = power.SudoersLine(currentUserName())
 	}
 
+	// Describe the effective daemon-wide active-hours window (resolved against the
+	// current local zone for a follow-local window) so operators can confirm the
+	// universal setting, like wake.
+	activeHours := ""
+	if w := d.buildWindow(&model.DesiredState{}); w != nil {
+		activeHours = w.Describe()
+	}
+
 	return &model.HealthResult{
 		DaemonRunning: true,
 		PID:           os.Getpid(),
@@ -731,12 +756,71 @@ func (d *Daemon) handleHealth() (*model.HealthResult, *model.RPCError) {
 		LogFile:       d.cfg.Daemon.LogFile,
 		Launchd:       launchd.IsInstalled(),
 		ScheduleCount: scheduleCount,
+		ActiveHours:   activeHours,
 
 		WakeEnabled:     d.cfg.Daemon.Wake.Enabled,
 		PmsetAvailable:  pmsetAvailable,
 		WakePermission:  wakePermission,
 		WakeNextAt:      wakeNextAt,
 		WakeSudoersHint: wakeSudoersHint,
+	}, nil
+}
+
+// handleSetActiveHours sets (or clears) the daemon-wide active-hours window at
+// runtime: it validates and persists the window to local settings, applies it
+// live (updating every schedule's effective window and re-clamping pending
+// fires into it), and signals the run loop. Unlike editing the config file, this
+// takes effect immediately with no restart.
+func (d *Daemon) handleSetActiveHours(p model.SetActiveHoursParams) (*model.SetActiveHoursResult, *model.RPCError) {
+	var ah *model.ActiveHours
+	if !p.Clear {
+		parsed, err := model.ParseActiveHours(p.Window, p.Timezone)
+		if err != nil {
+			return nil, &model.RPCError{Code: model.RPCErrCodeInvalidParams, Message: err.Error()}
+		}
+		if parsed == nil {
+			return nil, &model.RPCError{
+				Code:    model.RPCErrCodeInvalidParams,
+				Message: "window is required (e.g. \"08:00-22:00\"); pass clear=true to remove the active-hours window",
+			}
+		}
+		ah = parsed
+	}
+
+	// Persist first so the setting survives a restart even if the daemon dies
+	// mid-apply. A write failure aborts before any live change.
+	if err := d.settingsStore.EnsureDir(); err != nil {
+		return nil, &model.RPCError{Code: model.RPCErrCodeInternal, Message: "ensure state dir: " + err.Error()}
+	}
+	if err := d.settingsStore.Write(&model.Settings{ActiveHours: ah}); err != nil {
+		return nil, &model.RPCError{Code: model.RPCErrCodeInternal, Message: "persist settings: " + err.Error()}
+	}
+
+	// Apply live. setActiveHours swaps the pointer under its own lock; the reclamp
+	// runs under d.mu. buildWindow (called via reclamp) reads the new value.
+	d.setActiveHours(ah)
+
+	d.mu.Lock()
+	moved := d.reclampSchedulesLocked(time.Now())
+	d.mu.Unlock()
+
+	desc := ""
+	if w := d.buildWindow(&model.DesiredState{}); w != nil {
+		desc = w.Describe()
+	}
+
+	d.signalWake()
+
+	if p.Clear {
+		log.Printf("active-hours window cleared (%d schedule(s) re-clamped)", moved)
+	} else {
+		log.Printf("active-hours window set to %s (%d schedule(s) re-clamped)", desc, moved)
+	}
+
+	return &model.SetActiveHoursResult{
+		ActiveHours: desc,
+		Cleared:     p.Clear,
+		Reclamped:   moved,
 	}, nil
 }
 
@@ -809,6 +893,7 @@ func (d *Daemon) refreshActiveSchedule(
 	existing.desired.Precondition = p.Precondition
 	existing.desired.PreconditionBackoff = p.PreconditionBackoff
 	existing.desired.PreconditionMaxElapsed = p.PreconditionMaxElapsed
+	existing.desired.IgnoreActiveHours = p.IgnoreActiveHours
 	if existing.desired.Status == model.StatusCompleted {
 		existing.desired.Status = model.StatusActive
 		existing.desired.CompletionReason = ""
@@ -840,10 +925,13 @@ func (d *Daemon) refreshActiveSchedule(
 		return nil, d.gitPreconditionError(fmt.Errorf("git commit failed: %w", err))
 	}
 
-	// Reset runtime state with fresh countdown (preserve zero NextFireAt for paused).
+	// Reset runtime state with fresh countdown (preserve zero NextFireAt for
+	// paused). Clamp into the active-hours window so a refresh during closed
+	// hours does not schedule an immediate fire.
+	window := d.buildWindow(existing.desired)
 	var nextFire time.Time
 	if existing.desired.Status != model.StatusPaused {
-		nextFire = trig.NextFireTime(time.Now())
+		nextFire, _ = window.Clamp(trig.NextFireTime(time.Now()))
 	}
 	runtime := &model.RuntimeState{
 		ID:         id,
@@ -876,6 +964,7 @@ func (d *Daemon) refreshActiveSchedule(
 	d.mu.Lock()
 	existing.runtime = runtime
 	existing.trigger = trig
+	existing.window = window
 	d.schedules[id] = existing
 	d.mu.Unlock()
 	d.signalWake()
@@ -898,16 +987,18 @@ func (d *Daemon) refreshActiveSchedule(
 	}
 
 	result := &model.AddResult{
-		ID:          id,
-		Name:        name,
-		Schedule:    trig.HumanDescription(),
-		NextFire:    nextFireStr,
-		NextFireUTC: nextFireUTC,
-		Status:      "refreshed",
-		SavedTo:     relPath,
-		Committed:   commitMsg,
-		Recovery:    recovery,
-		Warning:     warning,
+		ID:                id,
+		Name:              name,
+		Schedule:          trig.HumanDescription(),
+		NextFire:          nextFireStr,
+		NextFireUTC:       nextFireUTC,
+		Status:            "refreshed",
+		SavedTo:           relPath,
+		Committed:         commitMsg,
+		ActiveHours:       window.Describe(),
+		IgnoreActiveHours: existing.desired.IgnoreActiveHours,
+		Recovery:          recovery,
+		Warning:           warning,
 	}
 
 	return result, nil
@@ -938,6 +1029,7 @@ func (d *Daemon) reactivateSchedule(
 	completed.Precondition = p.Precondition
 	completed.PreconditionBackoff = p.PreconditionBackoff
 	completed.PreconditionMaxElapsed = p.PreconditionMaxElapsed
+	completed.IgnoreActiveHours = p.IgnoreActiveHours
 	if p.Name != "" {
 		completed.Name = p.Name
 		name = p.Name
@@ -964,8 +1056,9 @@ func (d *Daemon) reactivateSchedule(
 		return nil, d.gitPreconditionError(fmt.Errorf("git commit failed: %w", err))
 	}
 
-	// Create fresh runtime state.
-	nextFire := trig.NextFireTime(time.Now())
+	// Create fresh runtime state, clamped into the active-hours window.
+	window := d.buildWindow(completed)
+	nextFire, _ := window.Clamp(trig.NextFireTime(time.Now()))
 	runtime := &model.RuntimeState{
 		ID:         id,
 		NextFireAt: nextFire,
@@ -997,6 +1090,7 @@ func (d *Daemon) reactivateSchedule(
 		desired: completed,
 		runtime: runtime,
 		trigger: trig,
+		window:  window,
 	}
 	d.mu.Unlock()
 	d.signalWake()
@@ -1004,16 +1098,18 @@ func (d *Daemon) reactivateSchedule(
 	log.Printf("schedule %s (%s): reactivated from completed state", id, name)
 
 	result := &model.AddResult{
-		ID:          id,
-		Name:        name,
-		Schedule:    trig.HumanDescription(),
-		NextFire:    nextFire.Local().Format("Mon Jan 2 3:04 PM MST"),
-		NextFireUTC: nextFire.UTC().Format(time.RFC3339),
-		Status:      "reactivated",
-		SavedTo:     relPath,
-		Committed:   commitMsg,
-		Recovery:    recovery,
-		Warning:     warning,
+		ID:                id,
+		Name:              name,
+		Schedule:          trig.HumanDescription(),
+		NextFire:          nextFire.Local().Format("Mon Jan 2 3:04 PM MST"),
+		NextFireUTC:       nextFire.UTC().Format(time.RFC3339),
+		Status:            "reactivated",
+		SavedTo:           relPath,
+		Committed:         commitMsg,
+		ActiveHours:       window.Describe(),
+		IgnoreActiveHours: completed.IgnoreActiveHours,
+		Recovery:          recovery,
+		Warning:           warning,
 	}
 
 	return result, nil
@@ -1151,10 +1247,11 @@ var availableMethods = []string{
 	model.MethodPause, model.MethodUnpause,
 	model.MethodList, model.MethodShow,
 	model.MethodReload, model.MethodHealth,
+	model.MethodSetActiveHours,
 }
 
 // buildSummary constructs a ScheduleSummary from an activeSchedule.
-func buildSummary(sched *activeSchedule) model.ScheduleSummary {
+func (d *Daemon) buildSummary(sched *activeSchedule) model.ScheduleSummary {
 	summary := model.ScheduleSummary{
 		ID:       sched.desired.ID,
 		Name:     sched.desired.Name,
@@ -1178,6 +1275,16 @@ func buildSummary(sched *activeSchedule) model.ScheduleSummary {
 	// pending fire and a retry is pending. PreconditionFirstDeferredAt is the
 	// authoritative anchor for that sequence (nil between fires).
 	summary.Deferred = sched.runtime.PreconditionFirstDeferredAt != nil
+
+	// Surface the effective (daemon-wide) active-hours window this schedule obeys
+	// and whether we are currently inside a closed period (NextFire is then the
+	// window opening, not the natural slot). A schedule that opts out carries no
+	// window; flag the exemption so `show`/`list` can say so.
+	summary.IgnoreActiveHours = sched.desired.IgnoreActiveHours
+	if sched.window != nil {
+		summary.ActiveHours = sched.window.Describe()
+		summary.Suppressed = !sched.window.Contains(time.Now())
+	}
 
 	return summary
 }

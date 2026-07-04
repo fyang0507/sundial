@@ -11,6 +11,7 @@ import (
 
 	"github.com/fyang0507/sundial/internal/gitops"
 	"github.com/fyang0507/sundial/internal/ipc"
+	"github.com/fyang0507/sundial/internal/localtz"
 	"github.com/fyang0507/sundial/internal/model"
 	"github.com/fyang0507/sundial/internal/power"
 	"github.com/fyang0507/sundial/internal/store"
@@ -21,18 +22,34 @@ type activeSchedule struct {
 	desired *model.DesiredState
 	runtime *model.RuntimeState
 	trigger model.Trigger
-	mu      sync.Mutex // per-schedule mutex to prevent overlapping runs
+	// window is the resolved active-hours window (nil when the schedule has no
+	// window, meaning always active). Rebuilt from desired.ActiveHours whenever
+	// the schedule is (re)built in reconcile/add/refresh/reactivate.
+	window *model.ActiveWindow
+	mu     sync.Mutex // per-schedule mutex to prevent overlapping runs
+}
+
+// nextFire computes the schedule's next fire time strictly after `after`,
+// clamped to its active-hours window. When the trigger's natural slot falls
+// outside the window, the returned time is the next window opening and deferred
+// is true — the single choke point that makes every trigger type obey active
+// hours. A schedule with no window returns the raw trigger time and deferred is
+// always false.
+func (s *activeSchedule) nextFire(after time.Time) (fire time.Time, deferred bool) {
+	raw := s.trigger.NextFireTime(after)
+	return s.window.Clamp(raw)
 }
 
 // Daemon is the core scheduler runtime. It ties together triggers, stores,
 // gitops, and IPC into a single process that manages schedule lifecycle.
 type Daemon struct {
-	cfg          *model.Config
-	desiredStore *store.DesiredStore
-	runtimeStore *store.RuntimeStore
-	runLogStore  *store.RunLogStore
-	gitOps       *gitops.GitOps
-	ipcServer    *ipc.Server
+	cfg           *model.Config
+	desiredStore  *store.DesiredStore
+	runtimeStore  *store.RuntimeStore
+	runLogStore   *store.RunLogStore
+	settingsStore *store.SettingsStore
+	gitOps        *gitops.GitOps
+	ipcServer     *ipc.Server
 
 	schedules map[string]*activeSchedule // protected by mu
 	mu        sync.RWMutex
@@ -56,6 +73,27 @@ type Daemon struct {
 
 	startedAt time.Time
 
+	// --- machine local-timezone tracking (for follow-local active-hours) ---
+	//
+	// The daemon is long-lived, so time.Local (cached at process start) goes
+	// stale if the host's timezone changes while running (e.g. a laptop travels
+	// NYC -> SFO). We track the current zone here, refresh it from the OS on each
+	// run-loop tick via localtz, and recompute follow-local active-hours windows
+	// when it changes. Guarded by localZoneMu (separate from mu so a zone probe
+	// never blocks schedule reads/writes).
+	localZoneMu   sync.Mutex
+	localZoneName string
+	localZone     *time.Location
+
+	// activeHours is the parsed daemon-wide firing window (nil = no window),
+	// applied to every schedule that doesn't set IgnoreActiveHours. When its
+	// timezone is empty it follows the machine local zone (see localZone). It is
+	// runtime-mutable via the set_active_hours RPC and persisted in settingsStore,
+	// so access is guarded by activeHoursMu (the pointer is swapped, never
+	// mutated in place). Separate from mu so a read never blocks schedule ops.
+	activeHoursMu sync.Mutex
+	activeHours   *model.ActiveHours
+
 	wake chan struct{} // signal to re-evaluate next fire
 	quit chan struct{} // shutdown signal
 	done chan struct{} // closed when daemon fully stopped
@@ -69,21 +107,87 @@ func New(cfg *model.Config) (*Daemon, error) {
 		return nil, fmt.Errorf("data_repo is required")
 	}
 
+	zoneName, zone := localtz.Load()
+
+	settingsStore := store.NewSettingsStore(cfg.State.Path)
+
+	// Load the daemon-wide active-hours window from local runtime settings (set
+	// via `sundial set-active-hours`, persisted across restarts). A missing file
+	// yields no window; a read error degrades to no window with a WARN.
+	var activeHours *model.ActiveHours
+	if settings, err := settingsStore.Read(); err != nil {
+		log.Printf("WARN: failed to read settings, disabling active-hours window: %v", err)
+	} else {
+		activeHours = settings.ActiveHours
+	}
+
 	d := &Daemon{
-		cfg:          cfg,
-		desiredStore: store.NewDesiredStore(cfg.DataRepo),
-		runtimeStore: store.NewRuntimeStore(cfg.State.Path),
-		runLogStore:  store.NewRunLogStore(cfg.State.LogsPath),
-		gitOps:       gitops.NewGitOps(cfg.DataRepo),
-		powerRunner:  power.DefaultRunner(),
-		schedules:    make(map[string]*activeSchedule),
-		startedAt:    time.Now(),
-		wake:         make(chan struct{}, 1),
-		quit:         make(chan struct{}),
-		done:         make(chan struct{}),
+		cfg:           cfg,
+		desiredStore:  store.NewDesiredStore(cfg.DataRepo),
+		runtimeStore:  store.NewRuntimeStore(cfg.State.Path),
+		runLogStore:   store.NewRunLogStore(cfg.State.LogsPath),
+		settingsStore: settingsStore,
+		gitOps:        gitops.NewGitOps(cfg.DataRepo),
+		powerRunner:   power.DefaultRunner(),
+		schedules:     make(map[string]*activeSchedule),
+		startedAt:     time.Now(),
+		localZoneName: zoneName,
+		localZone:     zone,
+		activeHours:   activeHours,
+		wake:          make(chan struct{}, 1),
+		quit:          make(chan struct{}),
+		done:          make(chan struct{}),
 	}
 
 	return d, nil
+}
+
+// currentLocalZone returns the daemon's currently-tracked machine local zone.
+// It is refreshed from the OS by maybeReconcileTimezone on each run-loop tick,
+// so follow-local active-hours windows always resolve against the host's
+// present timezone rather than the (cached) time.Local captured at startup.
+func (d *Daemon) currentLocalZone() *time.Location {
+	d.localZoneMu.Lock()
+	defer d.localZoneMu.Unlock()
+	if d.localZone == nil {
+		return time.Local
+	}
+	return d.localZone
+}
+
+// buildWindow resolves the EFFECTIVE active-hours window for a schedule: the
+// daemon-wide window (DaemonConfig.ActiveHours), resolved against the current
+// local zone for a follow-local window or its pinned zone. It returns nil —
+// meaning always active — when there is no global window or the schedule opts
+// out via IgnoreActiveHours. A malformed global window degrades to nil (config
+// validation rejects it at startup, so this should be unreachable).
+func (d *Daemon) buildWindow(ds *model.DesiredState) *model.ActiveWindow {
+	ah := d.getActiveHours()
+	if ah == nil || ds.IgnoreActiveHours {
+		return nil
+	}
+	w, err := ah.WindowIn(d.currentLocalZone())
+	if err != nil {
+		log.Printf("WARN: schedule %s (%s): invalid active_hours %s, ignoring window: %v",
+			ds.ID, ds.Name, ah.Describe(), err)
+		return nil
+	}
+	return w
+}
+
+// getActiveHours returns the current daemon-wide active-hours window (nil = none)
+// under activeHoursMu. setActiveHours swaps it. The returned *ActiveHours is
+// never mutated in place, so callers may read it without holding the lock.
+func (d *Daemon) getActiveHours() *model.ActiveHours {
+	d.activeHoursMu.Lock()
+	defer d.activeHoursMu.Unlock()
+	return d.activeHours
+}
+
+func (d *Daemon) setActiveHours(ah *model.ActiveHours) {
+	d.activeHoursMu.Lock()
+	d.activeHours = ah
+	d.activeHoursMu.Unlock()
 }
 
 // Start brings the daemon online:

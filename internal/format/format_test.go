@@ -364,6 +364,44 @@ func TestFormatHealthResult_PlainText(t *testing.T) {
 	if !contains(got, "schedules: 3 active") {
 		t.Error("expected schedule count")
 	}
+	// No window configured => disabled line.
+	if !contains(got, "active_hours: disabled") {
+		t.Errorf("expected active_hours disabled line, got:\n%s", got)
+	}
+}
+
+func TestFormatHealthResult_ActiveHours(t *testing.T) {
+	r := &model.HealthResult{
+		DaemonRunning: true,
+		ActiveHours:   "08:00-22:00 America/New_York",
+	}
+	got := FormatHealthResult(r, false)
+	if !contains(got, "active_hours: 08:00-22:00 America/New_York") {
+		t.Errorf("expected active_hours window line, got:\n%s", got)
+	}
+}
+
+func TestFormatShowResult_ActiveHours(t *testing.T) {
+	// Obeys the window and is currently suppressed.
+	suppressed := &model.ShowResult{
+		ScheduleSummary: model.ScheduleSummary{
+			ID: "sch_a", Status: "active",
+			ActiveHours: "08:00-22:00 America/New_York", Suppressed: true,
+		},
+	}
+	got := FormatShowResult(suppressed, false)
+	if !contains(got, "active_hours: 08:00-22:00 America/New_York") || !contains(got, "currently outside window") {
+		t.Errorf("expected suppressed active_hours line, got:\n%s", got)
+	}
+
+	// Opted out.
+	ignored := &model.ShowResult{
+		ScheduleSummary: model.ScheduleSummary{ID: "sch_b", Status: "active", IgnoreActiveHours: true},
+	}
+	got = FormatShowResult(ignored, false)
+	if !contains(got, "active_hours: ignored") {
+		t.Errorf("expected ignored active_hours line, got:\n%s", got)
+	}
 }
 
 func TestFormatHealthResult_JSON(t *testing.T) {

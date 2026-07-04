@@ -23,6 +23,12 @@ const (
 	// precondition command exited non-zero. The schedule did NOT fire and
 	// FireCount is unchanged; the daemon will retry after a backoff interval.
 	LogTypeDeferred RunLogType = "deferred"
+	// LogTypeSuppressed records a fire that was NOT run because it fell outside
+	// the schedule's active-hours window. The command did not execute and
+	// FireCount is unchanged; NextFireAt was deferred to the next window opening.
+	// It is distinct from LogTypeDeferred (precondition), a non-zero command exit
+	// (LogTypeFire with exit_code), and a poll-check false (no log entry).
+	LogTypeSuppressed RunLogType = "suppressed"
 )
 
 // CompletionReason records why a schedule was completed.
@@ -73,6 +79,12 @@ type DesiredState struct {
 	// Empty => default termination (bounded by the next regular fire for recurring
 	// triggers; bounded by the daemon at-deadline budget for one-off `at`).
 	PreconditionMaxElapsed string `json:"precondition_max_elapsed,omitempty"`
+	// IgnoreActiveHours exempts this schedule from the daemon-wide active-hours
+	// window (DaemonConfig.ActiveHours). Default false: every schedule obeys the
+	// global window. Set true for a legitimate off-hours job (e.g. a 3am backup)
+	// that must fire regardless of the operator's waking hours. Has no effect when
+	// no global window is configured. See internal/model/activehours.go.
+	IgnoreActiveHours bool `json:"ignore_active_hours,omitempty"`
 }
 
 // RuntimeState is machine-local scheduling data managed by the daemon.

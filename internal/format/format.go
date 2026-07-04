@@ -27,12 +27,36 @@ func FormatAddResult(r *model.AddResult, jsonMode bool) string {
 	kv(&b, "status", r.Status)
 	kv(&b, "saved_to", r.SavedTo)
 	kv(&b, "committed", r.Committed)
+	// Remind the operator about the daemon-wide active-hours window: an obeying
+	// schedule only fires inside it (its next_fire is already clamped), and a
+	// truly time-critical job can opt out. A schedule that already opted out gets
+	// a confirmation instead.
+	if r.IgnoreActiveHours {
+		kv(&b, "active_hours", "ignored (this schedule fires at any hour)")
+	} else if r.ActiveHours != "" {
+		kv(&b, "active_hours", fmt.Sprintf("%s — this schedule fires only in this window (next_fire is clamped to it); pass --ignore-active-hours to override", r.ActiveHours))
+	}
 	if r.Recovery != "" {
 		kv(&b, "recovery", r.Recovery)
 	}
 	if r.Warning != "" {
 		kv(&b, "warning", r.Warning)
 	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// FormatSetActiveHoursResult formats a SetActiveHoursResult for display.
+func FormatSetActiveHoursResult(r *model.SetActiveHoursResult, jsonMode bool) string {
+	if jsonMode {
+		return mustMarshal(r)
+	}
+	var b strings.Builder
+	if r.Cleared {
+		kv(&b, "active_hours", "cleared (schedules fire at any hour)")
+	} else {
+		kv(&b, "active_hours", r.ActiveHours)
+	}
+	kv(&b, "reclamped", fmt.Sprintf("%d schedule(s) re-clamped to the new window", r.Reclamped))
 	return strings.TrimRight(b.String(), "\n")
 }
 
@@ -92,6 +116,11 @@ func FormatListResult(r *model.ListResult, jsonMode bool) string {
 		// NEXT FIRE shown is the retry instant, not the natural slot.
 		if s.Deferred {
 			status += " [deferred]"
+		}
+		// Flag a schedule currently held back by its active-hours window; NEXT
+		// FIRE is then the window opening rather than the natural slot.
+		if s.Suppressed {
+			status += " [outside active hours]"
 		}
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", s.ID, s.Name, schedule, s.NextFire, status)
 	}
@@ -158,6 +187,18 @@ func FormatShowResult(r *model.ShowResult, jsonMode bool) string {
 		kv(&b, "deferred", fmt.Sprintf("precondition not met (attempt %d, next retry %s)", r.PreconditionAttempts, retry))
 	}
 
+	// Active-hours: whether the schedule obeys the daemon-wide window (and is
+	// presently suppressed inside a closed period) or is exempt.
+	if r.IgnoreActiveHours {
+		kv(&b, "active_hours", "ignored (fires at any hour)")
+	} else if r.ActiveHours != "" {
+		line := r.ActiveHours
+		if r.Suppressed {
+			line += " (currently outside window — next fire deferred to window opening)"
+		}
+		kv(&b, "active_hours", line)
+	}
+
 	return strings.TrimRight(b.String(), "\n")
 }
 
@@ -185,6 +226,11 @@ func FormatHealthResult(r *model.HealthResult, jsonMode bool) string {
 	kv(&b, "log_file", r.LogFile)
 	kv(&b, "launchd", launchdStatus)
 	kv(&b, "schedules", fmt.Sprintf("%d active", r.ScheduleCount))
+	activeHoursStatus := "disabled (schedules fire at any hour)"
+	if r.ActiveHours != "" {
+		activeHoursStatus = r.ActiveHours + " (schedules fire only in this window unless --ignore-active-hours)"
+	}
+	kv(&b, "active_hours", activeHoursStatus)
 
 	// Wake section: only meaningful detail when the operator opted in. When
 	// disabled we keep it to a single line so health stays scannable.

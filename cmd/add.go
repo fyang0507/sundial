@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/fyang0507/sundial/internal/format"
+	"github.com/fyang0507/sundial/internal/localtz"
 	"github.com/fyang0507/sundial/internal/model"
 	"github.com/fyang0507/sundial/internal/trigger"
 	"github.com/spf13/cobra"
@@ -24,17 +25,18 @@ var addCmd = &cobra.Command{
 }
 
 var (
-	addCommand     string
-	addName        string
-	addUserRequest string
-	addDryRun      bool
-	addForce       bool
-	addRefresh     bool
+	addCommand                string
+	addName                   string
+	addUserRequest            string
+	addDryRun                 bool
+	addForce                  bool
+	addRefresh                bool
 	addDetach                 bool
 	addExecTimeout            string
 	addPrecondition           string
 	addPreconditionBackoff    string
 	addPreconditionMaxElapsed string
+	addIgnoreActiveHours      bool
 )
 
 func init() {
@@ -51,6 +53,7 @@ func init() {
 	addCmd.PersistentFlags().StringVar(&addPrecondition, "precondition", "", "readiness-gate shell command run before each fire; exit 0 = proceed, non-zero = defer and retry with backoff")
 	addCmd.PersistentFlags().StringVar(&addPreconditionBackoff, "precondition-backoff", "", "comma-separated retry backoff for a deferred --precondition (Go durations, e.g. \"1m,5m,30m,1h,2h\"); last entry repeats as cap; empty = daemon default")
 	addCmd.PersistentFlags().StringVar(&addPreconditionMaxElapsed, "precondition-max-elapsed", "", "give-up budget for a deferred --precondition (Go duration); when set, terminate by elapsed budget in addition to the next-regular-fire bound")
+	addCmd.PersistentFlags().BoolVar(&addIgnoreActiveHours, "ignore-active-hours", false, "exempt this schedule from the daemon-wide active-hours window (daemon.active_hours) so it fires at any hour (e.g. a 3am backup)")
 }
 
 // parsePreconditionBackoff splits the comma-separated --precondition-backoff
@@ -121,6 +124,7 @@ func applySharedAddParams(params *model.AddParams) {
 	params.Precondition = addPrecondition
 	params.PreconditionBackoff = parsePreconditionBackoff(addPreconditionBackoff)
 	params.PreconditionMaxElapsed = addPreconditionMaxElapsed
+	params.IgnoreActiveHours = addIgnoreActiveHours
 }
 
 // dispatchAdd routes to dry-run preview or daemon RPC.
@@ -182,23 +186,16 @@ func runAddDryRun(params model.AddParams, cfg model.TriggerConfig, displayTimezo
 			fmt.Printf("precondition_max_elapsed: %s\n", params.PreconditionMaxElapsed)
 		}
 	}
+	if params.IgnoreActiveHours {
+		fmt.Printf("active_hours: ignored (this schedule fires at any hour, exempt from the daemon-wide window)\n")
+	}
 }
 
-// detectLocalTimezone returns the system's IANA timezone name, falling back to
-// time.Local.String() (typically "Local") when no IANA name can be resolved.
-// On macOS and most Linux systems, /etc/localtime is a symlink whose target
-// encodes the zone name (e.g. ".../zoneinfo/America/Los_Angeles").
+// detectLocalTimezone returns the system's IANA timezone name for use as the
+// default display/computation zone of a solar/at schedule at add time. It reads
+// the machine's current zone via the shared localtz package.
 func detectLocalTimezone() string {
-	if tz := os.Getenv("TZ"); tz != "" {
-		return tz
-	}
-	if target, err := os.Readlink("/etc/localtime"); err == nil {
-		const marker = "zoneinfo/"
-		if idx := strings.LastIndex(target, marker); idx >= 0 {
-			return target[idx+len(marker):]
-		}
-	}
-	return time.Local.String()
+	return localtz.Name()
 }
 
 func addError(msg string) {

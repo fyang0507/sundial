@@ -32,6 +32,13 @@ data_repo_path: "~/path/to/your/data-repo"   # REQUIRED — path to the portable
 #   # Window within which a fire missed while the daemon was offline/asleep is
 #   # still executed once on the next tick (beyond it: logged as a miss).
 #   miss_grace_period: "60s"
+#
+# NOTE: the daemon-wide active-hours window (every schedule fires only inside it)
+# is NOT a config-file setting — it is runtime state managed via the CLI so it
+# can be changed without a restart:
+#     sundial set-active-hours "08:00-22:00"   # follows the machine's local zone
+#     sundial set-active-hours --clear         # remove it
+# See `sundial set-active-hours --help`.
 #   # Wake a sleeping Mac before a due schedule (macOS pmset). Off by default.
 #   # When enabled, the daemon schedules ONE pmset wake event for the soonest
 #   # fire across all active schedules, 'lead_time' before it. Enabling requires

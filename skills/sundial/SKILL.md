@@ -26,7 +26,7 @@ Four triggers cover the scheduling repertoire. See [scheduling.md](scheduling.md
 - **poll** — condition-gated periodic check: runs a trigger command on an interval and fires the main command only when the trigger exits `0`. Use for "when a reply arrives — could be 2 minutes, could be 3 days".
 - **at** — one-off fire at an absolute timestamp; auto-completes after firing. Use for "wake me up at 10am tomorrow".
 
-Two cross-cutting flags apply to **any** trigger: `--exec-timeout` caps a command's wall-clock runtime (kills it if it hangs), and `--precondition` adds a readiness gate that defers-and-retries with exponential backoff when a check command exits non-zero (e.g. "only fire when the network is up"). See [scheduling.md](scheduling.md) for both.
+Two cross-cutting flags apply to **any** trigger: `--exec-timeout` caps a command's wall-clock runtime (kills it if it hangs), and `--precondition` adds a readiness gate that defers-and-retries with exponential backoff when a check command exits non-zero (e.g. "only fire when the network is up"). Separately, a **daemon-wide active-hours window** — set at runtime with `sundial set-active-hours "08:00-22:00"` — confines *every* schedule to your waking hours, deferring off-hours fires to the next window opening; a schedule opts out with `--ignore-active-hours`. See [scheduling.md](scheduling.md) for all of these.
 
 ## How sundial models a schedule
 

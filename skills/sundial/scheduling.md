@@ -1,6 +1,6 @@
 # Scheduling with Sundial
 
-This enriches `sundial <command> --help` — it does not repeat it. Every flag, the accepted formats, and a worked example for each trigger already live in `sundial add cron|solar|poll|at --help`. What follows is the behavior and contracts the flag reference can't convey: the poll trigger contract, the `--detach` + `--refresh` callback pattern, `--exec-timeout` and `--precondition` readiness gates, duplicate detection, state inspection, the data-repo model, git sync, and diagnostics. For driving agent sessions specifically, see [agent-workflows.md](agent-workflows.md); for one-time setup, see [setup.md](setup.md).
+This enriches `sundial <command> --help` — it does not repeat it. Every flag, the accepted formats, and a worked example for each trigger already live in `sundial add cron|solar|poll|at --help`. What follows is the behavior and contracts the flag reference can't convey: the poll trigger contract, the `--detach` + `--refresh` callback pattern, `--exec-timeout` and `--precondition` readiness gates, the daemon-wide active-hours firing window, duplicate detection, state inspection, the data-repo model, git sync, and diagnostics. For driving agent sessions specifically, see [agent-workflows.md](agent-workflows.md); for one-time setup, see [setup.md](setup.md).
 
 You always talk to the daemon through the CLI — there is no Go library and no stable IPC surface for third parties (the Unix-socket JSON-RPC is an internal detail and may change). Every command accepts `--json` and is non-interactive: exit code `0` = success, `1` = error; errors go to stderr.
 
@@ -104,6 +104,43 @@ sundial add cron --cron "0 9 * * *" \
 
 `generate_204` returns HTTP 204 with an empty body and is widely used as a captive-portal/connectivity probe; `curl -sf --max-time 5` exits non-zero on any failure (DNS, timeout, non-2xx), so a flaky or absent network defers the fire. A pure-offline check that avoids any external endpoint is `route -n get default >/dev/null 2>&1` (a default route exists) or a DNS lookup like `dscacheutil -q host -a name www.apple.com >/dev/null 2>&1`. The default backoff (`1m, 5m, 30m, 1h, 2h`) is well suited to transient outages; widen it with `--precondition-backoff` if your network recovers slowly. Pair the network-dependent **command** with `--exec-timeout` (see "Capping a command's runtime" above) so a fetch that connects and then hangs can't wedge the schedule.
 
+## Active-hours window (global; set via CLI; `--ignore-active-hours` to opt out)
+
+Active hours model **your waking hours**, so they are a **daemon-wide setting**, not a per-schedule flag — and they are **runtime state you change with the CLI**, not a config-file value (so an agent can adjust them without editing a file or restarting the daemon):
+
+```bash
+sundial set-active-hours "08:00-22:00"                     # every schedule fires only in this window
+sundial set-active-hours "22:00-02:00"                     # window may cross midnight
+sundial set-active-hours "08:00-22:00" --tz America/Denver # pin to a fixed zone
+sundial set-active-hours --clear                           # remove the window (fire at any hour)
+```
+
+The change is **applied to the running daemon immediately** — all existing schedules are re-clamped into the new window on the spot — and **persists across restarts** (stored in local state, not the data repo, since active hours are machine-local policy). `set-active-hours` reports how many schedules it re-clamped. **Every** schedule obeys the window (this mirrors `daemon.wake`: a single system-wide policy the schedules don't re-litigate).
+
+A fire whose natural slot falls outside the window is **deferred to the next window opening** (never dropped), for **every** trigger type: a cron `0 3 * * *` (daily 3am) runs at 08:00 instead; a poll interval that comes due at 02:00 waits until 08:00 to run its check; an `at` set for a time outside the window fires once when the window next opens.
+
+- **Follows your body clock by default.** With no `--tz`, the window is interpreted in the **machine's current local timezone and auto-updates when that changes**. Fly NYC → SFO and the daemon detects the new system zone (within ~a minute) and re-evaluates the window against it, so `08:00-22:00` keeps meaning *your local* 8am–10pm rather than staying on East-coast time. Pass `--tz` an IANA name (e.g. `America/Los_Angeles`) to **pin** the window to a fixed zone that does *not* travel. Windows are always evaluated in wall-clock terms in the effective zone, so they track DST either way.
+- **Crossing midnight.** When start > end the window wraps past midnight: `"22:00-02:00"` is active from 22:00 through 02:00 the next day. The interval is half-open `[start, end)` — a fire exactly at the end time is outside.
+- **Deferral, not catch-up-per-occurrence.** Many closed-period occurrences collapse into a **single** fire at the window opening — a `*/30` cron fires at 08:00, not once for every half-hour it was closed. `next_fire` (in `list`/`show`) always shows the next *eligible* time, already clamped into the window.
+- **Per-schedule opt-out.** A schedule that must run off-hours (e.g. a 3am backup) exempts itself with `sundial add ... --ignore-active-hours`; it then fires at any hour regardless of the global window. There is no per-schedule *window* — the only per-schedule control is the on/off opt-out.
+- **Interaction with `--precondition`.** Active hours is the **outer** gate: outside the window the fire is suppressed before the precondition is even checked. Inside the window, the precondition applies as usual.
+
+When a fire is held back by the window, the daemon records a **`suppressed` run-log entry** (`reason: "outside active hours <window> (deferred to <time>)"`) — distinct from a command failure (a `fire` with a non-zero `exit_code`), a precondition deferral (`deferred`), and a poll-check false (no entry). While the current time is inside a closed period, `sundial show` renders an `active_hours: <window> (currently outside window — next fire deferred to window opening)` line (JSON: `active_hours`, `suppressed`) and `list` tags the schedule `[outside active hours]`. `sundial health` reports the current window. A schedule that opted out shows `active_hours: ignored` (JSON: `ignore_active_hours`). `sundial add` echoes an `active_hours` reminder so you know the new schedule is confined to the window (and how to override).
+
+```bash
+# Set your waking hours once; every schedule is then confined to them.
+sundial set-active-hours "08:00-22:00"
+
+# This X reply pipeline is automatically confined to waking review hours.
+sundial add cron --cron "0 * * * *" \
+  --command "reply-pipeline run" \
+  --user-request "hourly X reply drafts to review while I'm awake"
+
+# A backup that MUST run overnight opts out of the window:
+sundial add cron --cron "0 3 * * *" --ignore-active-hours \
+  --command "backup run" --user-request "nightly 3am backup"
+```
+
 ## Recommended workflow
 
 1. Geocode if needed — `sundial geocode "<address>" --json`
@@ -122,7 +159,7 @@ sundial list --json
 sundial show <id> --json
 ```
 
-`sundial show` also surfaces the schedule's readiness configuration (`exec_timeout`, `precondition`, and any `precondition_backoff`/`precondition_max_elapsed` overrides) and — crucially — its **live precondition-backoff state**. When a fire is currently held back because the precondition exited non-zero, `show` renders a `deferred: precondition not met (attempt N, next retry <local time>)` line (in JSON: `precondition_deferred`, `precondition_attempts`, `precondition_retry_at`), and `list` tags that schedule `[deferred]`. This lets you distinguish a schedule *waiting on a precondition* (its `next_fire` is the retry instant, not the natural slot) from one that is genuinely idle until its next fire. It is the live complement to the `deferred` run-log entries that record past deferrals.
+`sundial show` also surfaces the schedule's readiness configuration (`exec_timeout`, `precondition`, and any `precondition_backoff`/`precondition_max_elapsed` overrides) and — crucially — its **live precondition-backoff state**. When a fire is currently held back because the precondition exited non-zero, `show` renders a `deferred: precondition not met (attempt N, next retry <local time>)` line (in JSON: `precondition_deferred`, `precondition_attempts`, `precondition_retry_at`), and `list` tags that schedule `[deferred]`. This lets you distinguish a schedule *waiting on a precondition* (its `next_fire` is the retry instant, not the natural slot) from one that is genuinely idle until its next fire. It is the live complement to the `deferred` run-log entries that record past deferrals. It also surfaces the daemon-wide active-hours window the schedule obeys and, when the current time is inside a closed period, marks it suppressed (JSON: `active_hours`, `suppressed`; `list` tags it `[outside active hours]`) — the live complement to the `suppressed` run-log entries. A schedule that opted out via `--ignore-active-hours` shows `active_hours: ignored` instead.
 
 The git-tracked files under `<data_repo>/sundial/schedules/` hold only the definition (trigger, command, status) — never the runtime fields — so a raw file read can't tell you when something next fires or whether its last run succeeded. Treat those files as **persistence and sync, not a query API**: read them only for git archaeology (what changed, when) or when debugging the daemon. For everything else, ask the CLI.
 
