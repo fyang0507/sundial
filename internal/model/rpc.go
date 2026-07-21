@@ -58,21 +58,31 @@ type AddParams struct {
 	Lat            *float64    `json:"lat,omitempty"`
 	Lon            *float64    `json:"lon,omitempty"`
 	Timezone       string      `json:"timezone,omitempty"`
-	TriggerCommand string      `json:"trigger_command,omitempty"` // poll: condition check command
-	Interval       string      `json:"interval,omitempty"`        // poll: check frequency
-	Timeout        string      `json:"timeout,omitempty"`         // poll: max lifetime, e.g. "72h"
-	FireAt         string      `json:"fire_at,omitempty"`         // at: RFC3339 absolute timestamp (UTC)
-	Command        string      `json:"command"`
-	Name           string      `json:"name,omitempty"`
-	UserRequest    string      `json:"user_request,omitempty"`
-	Force          bool        `json:"force,omitempty"`
-	Refresh        bool        `json:"refresh,omitempty"`      // update existing schedule in place if name matches
-	Once           bool        `json:"once,omitempty"`         // fire once then complete
-	Detach         bool        `json:"detach,omitempty"`       // fire-and-forget: spawn without waiting for exit
-	ExecTimeout    string      `json:"exec_timeout,omitempty"` // per-command wall-clock timeout (Go duration); empty = unbounded
+	TriggerCommand string      `json:"trigger_command,omitempty"` // poll: condition check command (shell-line form)
+	// TriggerCommandArgs is the poll condition check in argv-array form (see
+	// TriggerConfig.TriggerCommandArgs). When non-empty it takes precedence over
+	// TriggerCommand.
+	TriggerCommandArgs []string `json:"trigger_command_args,omitempty"`
+	Interval           string   `json:"interval,omitempty"` // poll: check frequency
+	Timeout            string   `json:"timeout,omitempty"`  // poll: max lifetime, e.g. "72h"
+	FireAt             string   `json:"fire_at,omitempty"`  // at: RFC3339 absolute timestamp (UTC)
+	Command            string   `json:"command,omitempty"`
+	// CommandArgs is the argv-array form of Command (see DesiredState.CommandArgs).
+	// When non-empty it takes precedence over Command; exactly one form is set.
+	CommandArgs []string `json:"command_args,omitempty"`
+	Name        string   `json:"name,omitempty"`
+	UserRequest string   `json:"user_request,omitempty"`
+	Force       bool     `json:"force,omitempty"`
+	Refresh     bool     `json:"refresh,omitempty"`      // update existing schedule in place if name matches
+	Once        bool     `json:"once,omitempty"`         // fire once then complete
+	Detach      bool     `json:"detach,omitempty"`       // fire-and-forget: spawn without waiting for exit
+	ExecTimeout string   `json:"exec_timeout,omitempty"` // per-command wall-clock timeout (Go duration); empty = unbounded
 	// Precondition is a readiness-gate shell command run before every fire; exit
 	// 0 = proceed, non-zero = defer-and-retry with backoff. Empty = no gate.
 	Precondition string `json:"precondition,omitempty"`
+	// PreconditionArgs is the argv-array form of Precondition (see
+	// DesiredState.PreconditionArgs). When non-empty it takes precedence.
+	PreconditionArgs []string `json:"precondition_args,omitempty"`
 	// PreconditionBackoff overrides the daemon default backoff schedule for this
 	// schedule (Go durations). Empty => daemon default.
 	PreconditionBackoff []string `json:"precondition_backoff,omitempty"`
@@ -180,11 +190,14 @@ type ShowParams struct {
 // ShowResult is returned by a successful "show" RPC.
 type ShowResult struct {
 	ScheduleSummary
-	Command           string `json:"command"`
-	UserRequest       string `json:"user_request,omitempty"`
-	CreatedAt         string `json:"created_at"`
-	RecreationCommand string `json:"recreation_command,omitempty"`
-	Detach            bool   `json:"detach,omitempty"`
+	Command string `json:"command,omitempty"`
+	// CommandArgs is the argv-array form of the command, populated instead of
+	// Command when the schedule was created in array form.
+	CommandArgs       []string `json:"command_args,omitempty"`
+	UserRequest       string   `json:"user_request,omitempty"`
+	CreatedAt         string   `json:"created_at"`
+	RecreationCommand string   `json:"recreation_command,omitempty"`
+	Detach            bool     `json:"detach,omitempty"`
 
 	// --- schedule configuration (mirrors DesiredState; empty => default) ---
 
@@ -194,6 +207,9 @@ type ShowResult struct {
 	// Precondition is the readiness-gate shell command run before every fire
 	// (exit 0 => proceed, non-zero => defer-and-retry). Empty means no gate.
 	Precondition string `json:"precondition,omitempty"`
+	// PreconditionArgs is the argv-array form of the precondition, populated
+	// instead of Precondition when the gate was created in array form.
+	PreconditionArgs []string `json:"precondition_args,omitempty"`
 	// PreconditionBackoff is the per-schedule override of the backoff schedule
 	// (Go durations). Empty means the daemon default applies.
 	PreconditionBackoff []string `json:"precondition_backoff,omitempty"`

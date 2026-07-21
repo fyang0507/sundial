@@ -26,6 +26,7 @@ var addCmd = &cobra.Command{
 
 var (
 	addCommand                string
+	addCommandArgs            []string
 	addName                   string
 	addUserRequest            string
 	addDryRun                 bool
@@ -34,6 +35,7 @@ var (
 	addDetach                 bool
 	addExecTimeout            string
 	addPrecondition           string
+	addPreconditionArgs       []string
 	addPreconditionBackoff    string
 	addPreconditionMaxElapsed string
 	addIgnoreActiveHours      bool
@@ -42,7 +44,8 @@ var (
 func init() {
 	rootCmd.AddCommand(addCmd)
 
-	addCmd.PersistentFlags().StringVar(&addCommand, "command", "", "shell command to execute (required)")
+	addCmd.PersistentFlags().StringVar(&addCommand, "command", "", "shell command LINE to execute (required unless --command-arg is used). Runs verbatim through `zsh -l -c` — supports pipes, redirection, globs, and variable expansion. A bare path containing a SPACE word-splits and fails with exit 127; for such a path use --command-arg instead (or quote it yourself).")
+	addCmd.PersistentFlags().StringArrayVar(&addCommandArgs, "command-arg", nil, "argv-array form of the command; repeat once per argument, e.g. --command-arg /My\\ Drive/run.zsh --command-arg --flag. Each value is a distinct argv word (no shell re-parsing), so spaces never word-split and no quoting is stored. Mutually exclusive with --command; still runs under the login shell so PATH resolves.")
 	addCmd.PersistentFlags().StringVar(&addName, "name", "", "human-readable schedule name")
 	addCmd.PersistentFlags().StringVar(&addUserRequest, "user-request", "", "original user request that generated this schedule")
 	addCmd.PersistentFlags().BoolVar(&addDryRun, "dry-run", false, "validate and preview without creating the schedule")
@@ -50,7 +53,8 @@ func init() {
 	addCmd.PersistentFlags().BoolVar(&addRefresh, "refresh", false, "update existing schedule if name matches (requires --name)")
 	addCmd.PersistentFlags().BoolVar(&addDetach, "detach", false, "fire-and-forget: spawn command without waiting (no exit code captured)")
 	addCmd.PersistentFlags().StringVar(&addExecTimeout, "exec-timeout", "", "per-command wall-clock timeout (Go duration, e.g. \"30m\"); empty = unbounded")
-	addCmd.PersistentFlags().StringVar(&addPrecondition, "precondition", "", "readiness-gate shell command run before each fire; exit 0 = proceed, non-zero = defer and retry with backoff")
+	addCmd.PersistentFlags().StringVar(&addPrecondition, "precondition", "", "readiness-gate shell command LINE run before each fire; exit 0 = proceed, non-zero = defer and retry with backoff. Same space-path caveat as --command; use --precondition-arg for a script path containing spaces.")
+	addCmd.PersistentFlags().StringArrayVar(&addPreconditionArgs, "precondition-arg", nil, "argv-array form of --precondition; repeat once per argument. Mutually exclusive with --precondition.")
 	addCmd.PersistentFlags().StringVar(&addPreconditionBackoff, "precondition-backoff", "", "comma-separated retry backoff for a deferred --precondition (Go durations, e.g. \"1m,5m,30m,1h,2h\"); last entry repeats as cap; empty = daemon default")
 	addCmd.PersistentFlags().StringVar(&addPreconditionMaxElapsed, "precondition-max-elapsed", "", "give-up budget for a deferred --precondition (Go duration); when set, terminate by elapsed budget in addition to the next-regular-fire bound")
 	addCmd.PersistentFlags().BoolVar(&addIgnoreActiveHours, "ignore-active-hours", false, "exempt this schedule from the daemon-wide active-hours window (daemon.active_hours) so it fires at any hour (e.g. a 3am backup)")
@@ -76,8 +80,14 @@ func parsePreconditionBackoff(s string) []string {
 
 // validateSharedAddFlags checks the flags that apply to every add subcommand.
 func validateSharedAddFlags() {
-	if addCommand == "" {
-		addError("--command is required")
+	if addCommand == "" && len(addCommandArgs) == 0 {
+		addError("--command (or --command-arg) is required")
+	}
+	if addCommand != "" && len(addCommandArgs) > 0 {
+		addError("--command and --command-arg are mutually exclusive: use the string form (--command) OR the argv-array form (--command-arg), not both")
+	}
+	if addPrecondition != "" && len(addPreconditionArgs) > 0 {
+		addError("--precondition and --precondition-arg are mutually exclusive")
 	}
 	if addRefresh && addForce {
 		addError("--refresh and --force are mutually exclusive")
@@ -97,8 +107,8 @@ func validateSharedAddFlags() {
 	}
 	// --precondition-backoff / --precondition-max-elapsed only have meaning when a
 	// precondition is set; flag them rather than silently ignoring.
-	if addPrecondition == "" && (addPreconditionBackoff != "" || addPreconditionMaxElapsed != "") {
-		addError("--precondition-backoff and --precondition-max-elapsed require --precondition")
+	if addPrecondition == "" && len(addPreconditionArgs) == 0 && (addPreconditionBackoff != "" || addPreconditionMaxElapsed != "") {
+		addError("--precondition-backoff and --precondition-max-elapsed require --precondition (or --precondition-arg)")
 	}
 	for _, d := range parsePreconditionBackoff(addPreconditionBackoff) {
 		if _, err := time.ParseDuration(d); err != nil {
@@ -115,6 +125,7 @@ func validateSharedAddFlags() {
 // applySharedAddParams writes shared flag values into params.
 func applySharedAddParams(params *model.AddParams) {
 	params.Command = addCommand
+	params.CommandArgs = addCommandArgs
 	params.Name = addName
 	params.UserRequest = addUserRequest
 	params.Force = addForce
@@ -122,6 +133,7 @@ func applySharedAddParams(params *model.AddParams) {
 	params.Detach = addDetach
 	params.ExecTimeout = addExecTimeout
 	params.Precondition = addPrecondition
+	params.PreconditionArgs = addPreconditionArgs
 	params.PreconditionBackoff = parsePreconditionBackoff(addPreconditionBackoff)
 	params.PreconditionMaxElapsed = addPreconditionMaxElapsed
 	params.IgnoreActiveHours = addIgnoreActiveHours
@@ -161,8 +173,14 @@ func runAddDryRun(params model.AddParams, cfg model.TriggerConfig, displayTimezo
 	fmt.Println("(dry run — no schedule created)")
 	fmt.Printf("schedule:   %s\n", trig.HumanDescription())
 	fmt.Printf("next_check: %s\n", format.FormatTime(next, tz))
-	fmt.Printf("command:    %s\n", params.Command)
-	if params.TriggerCommand != "" {
+	if len(params.CommandArgs) > 0 {
+		fmt.Printf("command:    %s\n", formatArgvPreview(params.CommandArgs))
+	} else {
+		fmt.Printf("command:    %s\n", params.Command)
+	}
+	if len(params.TriggerCommandArgs) > 0 {
+		fmt.Printf("trigger:    %s\n", formatArgvPreview(params.TriggerCommandArgs))
+	} else if params.TriggerCommand != "" {
 		fmt.Printf("trigger:    %s\n", params.TriggerCommand)
 	}
 	if params.Timeout != "" {
@@ -177,7 +195,15 @@ func runAddDryRun(params model.AddParams, cfg model.TriggerConfig, displayTimezo
 	if params.ExecTimeout != "" {
 		fmt.Printf("exec_timeout: %s (command killed if it runs longer)\n", params.ExecTimeout)
 	}
-	if params.Precondition != "" {
+	if len(params.PreconditionArgs) > 0 {
+		fmt.Printf("precondition: %s (exit 0 = proceed; non-zero = defer and retry)\n", formatArgvPreview(params.PreconditionArgs))
+		if len(params.PreconditionBackoff) > 0 {
+			fmt.Printf("precondition_backoff: %s\n", strings.Join(params.PreconditionBackoff, ", "))
+		}
+		if params.PreconditionMaxElapsed != "" {
+			fmt.Printf("precondition_max_elapsed: %s\n", params.PreconditionMaxElapsed)
+		}
+	} else if params.Precondition != "" {
 		fmt.Printf("precondition: %s (exit 0 = proceed; non-zero = defer and retry)\n", params.Precondition)
 		if len(params.PreconditionBackoff) > 0 {
 			fmt.Printf("precondition_backoff: %s\n", strings.Join(params.PreconditionBackoff, ", "))
@@ -196,6 +222,16 @@ func runAddDryRun(params model.AddParams, cfg model.TriggerConfig, displayTimezo
 // the machine's current zone via the shared localtz package.
 func detectLocalTimezone() string {
 	return localtz.Name()
+}
+
+// formatArgvPreview renders an argv-array for the dry-run preview, quoting each
+// entry so arguments with spaces read unambiguously. Display only.
+func formatArgvPreview(args []string) string {
+	quoted := make([]string, len(args))
+	for i, a := range args {
+		quoted[i] = fmt.Sprintf("%q", a)
+	}
+	return "[" + strings.Join(quoted, " ") + "] (argv array)"
 }
 
 func addError(msg string) {

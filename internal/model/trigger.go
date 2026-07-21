@@ -40,13 +40,19 @@ type TriggerConfig struct {
 	Type           TriggerType `json:"type"`
 	Cron           string      `json:"cron,omitempty"`
 	Event          SolarEvent  `json:"event,omitempty"`
-	Offset         string      `json:"offset,omitempty"`          // ISO 8601 duration, e.g. "-PT1H"
-	Days           []string    `json:"days,omitempty"`             // e.g. ["monday","tuesday"]
+	Offset         string      `json:"offset,omitempty"` // ISO 8601 duration, e.g. "-PT1H"
+	Days           []string    `json:"days,omitempty"`   // e.g. ["monday","tuesday"]
 	Location       *Location   `json:"location,omitempty"`
-	TriggerCommand string      `json:"trigger_command,omitempty"` // condition check command (poll)
-	Interval       string      `json:"interval,omitempty"`        // Go duration, e.g. "2m" (poll)
-	Timeout        string      `json:"timeout,omitempty"`         // Go duration, e.g. "72h" (poll)
-	FireAt         string      `json:"fire_at,omitempty"`         // RFC3339 absolute timestamp (at)
+	TriggerCommand string      `json:"trigger_command,omitempty"` // condition check command (poll), shell-line form
+	// TriggerCommandArgs is the OPTIONAL argv-array form of TriggerCommand (poll).
+	// When non-empty it takes precedence over TriggerCommand and is executed via a
+	// login shell without re-parsing (zsh -l -c 'exec "$@"' zsh <args...>), so a
+	// check-script path containing spaces never word-splits. Mirrors
+	// DesiredState.CommandArgs.
+	TriggerCommandArgs []string `json:"trigger_command_args,omitempty"`
+	Interval           string   `json:"interval,omitempty"` // Go duration, e.g. "2m" (poll)
+	Timeout            string   `json:"timeout,omitempty"`  // Go duration, e.g. "72h" (poll)
+	FireAt             string   `json:"fire_at,omitempty"`  // RFC3339 absolute timestamp (at)
 }
 
 // Trigger is the runtime interface for computing fire times.

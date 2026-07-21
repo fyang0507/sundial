@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"strings"
 	"syscall"
 	"time"
 
@@ -16,6 +17,59 @@ import (
 
 // maxOutputCapture is the maximum bytes captured from stdout/stderr.
 const maxOutputCapture = 10 * 1024 // 10 KB
+
+// shellInvocation describes a command to run through the user's LOGIN shell in
+// one of two mutually-exclusive forms:
+//
+//   - Line (string / shell-line form): a shell command LINE, run verbatim as
+//     `zsh -l -c <Line>`. Supports pipes, redirection, globs, and variable
+//     expansion — but a bare path containing a space word-splits (issue #58).
+//   - Args (argv-array form): an explicit argv, run as
+//     `zsh -l -c 'exec "$@"' zsh <Args...>`. The positional params are passed as
+//     distinct argv entries, so spaces never word-split and no shell quoting
+//     needs to live in stored data. Prefer this for a script path with spaces.
+//
+// Args takes precedence over Line when non-empty. BOTH forms run under `zsh -l`
+// so the login shell sources the user profile and rebuilds PATH — user tools
+// (uv, codex, homebrew, ~/.local/bin) resolve at fire time either way. The
+// array form does NOT drop the login shell; it only avoids re-parsing the
+// command text.
+type shellInvocation struct {
+	Line string
+	Args []string
+}
+
+// buildShellCommand is the single point where a command field is turned into an
+// exec argv. Every execution path (runInvocation → runCommand/WithEnv/WithTimeout,
+// the poll trigger check, the precondition, and executeDetached) funnels through
+// here so the string-vs-array semantics stay in exactly one place.
+//
+// It returns the executable name and the argv to pass to exec.Command /
+// exec.CommandContext.
+func buildShellCommand(inv shellInvocation) (name string, args []string) {
+	if len(inv.Args) > 0 {
+		// Argv-array form. `exec "$@"` replaces the shell with the target program,
+		// consuming the positional params ($1, $2, ...) that follow the literal
+		// "zsh" (which becomes $0). Because each Args entry is a separate argv
+		// word, a path like "/My Drive/script.zsh" is passed intact — no splitting.
+		shellArgs := make([]string, 0, len(inv.Args)+4)
+		shellArgs = append(shellArgs, "-l", "-c", `exec "$@"`, "zsh")
+		shellArgs = append(shellArgs, inv.Args...)
+		return "/bin/zsh", shellArgs
+	}
+	// String / shell-line form (backward-compatible default).
+	return "/bin/zsh", []string{"-l", "-c", inv.Line}
+}
+
+// display renders an invocation for human-facing logs. The array form has no
+// stored Line, so join the argv for readability (this string is NOT re-parsed —
+// it is log output only).
+func (inv shellInvocation) display() string {
+	if len(inv.Args) > 0 {
+		return strings.Join(inv.Args, " ")
+	}
+	return inv.Line
+}
 
 // ExecuteOutcome reports what a single execute() call did so the fire cycle can
 // branch. The three states are mutually exclusive in practice:
@@ -81,7 +135,7 @@ func (d *Daemon) execute(sched *activeSchedule) ExecuteOutcome {
 	// type before the poll check and before the main command. A non-zero exit
 	// defers the fire (no execution, no FireCount bump) and signals the caller to
 	// arrange a backoff retry.
-	if sched.desired.Precondition != "" {
+	if sched.desired.Precondition != "" || len(sched.desired.PreconditionArgs) > 0 {
 		if !d.checkPrecondition(sched) {
 			return ExecuteOutcome{Deferred: true}
 		}
@@ -103,8 +157,9 @@ func (d *Daemon) execute(sched *activeSchedule) ExecuteOutcome {
 		return ExecuteOutcome{Executed: d.executeDetached(sched)}
 	}
 
+	inv := shellInvocation{Line: sched.desired.Command, Args: sched.desired.CommandArgs}
 	log.Printf("schedule %s (%s): executing command: %s",
-		sched.desired.ID, sched.desired.Name, sched.desired.Command)
+		sched.desired.ID, sched.desired.Name, inv.display())
 
 	// Resolve the per-schedule execution timeout. An empty string means no
 	// timeout (today's unbounded behavior). A malformed value is logged and
@@ -122,7 +177,7 @@ func (d *Daemon) execute(sched *activeSchedule) ExecuteOutcome {
 		}
 	}
 
-	result := runCommandWithTimeout(sched.desired.Command, nil, timeout)
+	result := runInvocation(inv, nil, timeout)
 
 	if result.TimedOut {
 		log.Printf("schedule %s (%s): command exceeded exec_timeout %s, killed (exit_code=%d, duration=%s)",
@@ -176,10 +231,12 @@ func (d *Daemon) execute(sched *activeSchedule) ExecuteOutcome {
 // restarts and is not killed if launchd signals the daemon's process group.
 // LastExitCode stays nil — no sundial-side visibility into outcome.
 func (d *Daemon) executeDetached(sched *activeSchedule) bool {
+	inv := shellInvocation{Line: sched.desired.Command, Args: sched.desired.CommandArgs}
 	log.Printf("schedule %s (%s): spawning detached command: %s",
-		sched.desired.ID, sched.desired.Name, sched.desired.Command)
+		sched.desired.ID, sched.desired.Name, inv.display())
 
-	cmd := exec.Command("/bin/zsh", "-l", "-c", sched.desired.Command)
+	name, cmdArgs := buildShellCommand(inv)
+	cmd := exec.Command(name, cmdArgs...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
@@ -245,10 +302,13 @@ func (d *Daemon) isPollTimedOut(sched *activeSchedule) bool {
 // true if the condition passed (exit code 0). It increments CheckCount and
 // passes SUNDIAL_SCHEDULE_ID and SUNDIAL_LAST_FIRED_AT as environment variables.
 func (d *Daemon) runTriggerCheck(sched *activeSchedule) bool {
-	trigCmd := sched.desired.Trigger.TriggerCommand
+	inv := shellInvocation{
+		Line: sched.desired.Trigger.TriggerCommand,
+		Args: sched.desired.Trigger.TriggerCommandArgs,
+	}
 
 	log.Printf("schedule %s (%s): running trigger check: %s",
-		sched.desired.ID, sched.desired.Name, trigCmd)
+		sched.desired.ID, sched.desired.Name, inv.display())
 
 	// Build environment variables for the trigger command.
 	env := os.Environ()
@@ -259,7 +319,7 @@ func (d *Daemon) runTriggerCheck(sched *activeSchedule) bool {
 		env = append(env, "SUNDIAL_LAST_FIRED_AT=")
 	}
 
-	result := runCommandWithEnv(trigCmd, env)
+	result := runInvocation(inv, env, 0)
 
 	sched.runtime.CheckCount++
 	if err := d.runtimeStore.Write(sched.runtime); err != nil {
@@ -286,10 +346,10 @@ func (d *Daemon) runTriggerCheck(sched *activeSchedule) bool {
 // give-up bookkeeping for a failed precondition lives in the scheduler's fire
 // cycle (see advanceSchedule → deferPrecondition), not here.
 func (d *Daemon) checkPrecondition(sched *activeSchedule) bool {
-	cmd := sched.desired.Precondition
+	inv := shellInvocation{Line: sched.desired.Precondition, Args: sched.desired.PreconditionArgs}
 
 	log.Printf("schedule %s (%s): running precondition: %s",
-		sched.desired.ID, sched.desired.Name, cmd)
+		sched.desired.ID, sched.desired.Name, inv.display())
 
 	env := os.Environ()
 	env = append(env, fmt.Sprintf("SUNDIAL_SCHEDULE_ID=%s", sched.desired.ID))
@@ -299,7 +359,7 @@ func (d *Daemon) checkPrecondition(sched *activeSchedule) bool {
 		env = append(env, "SUNDIAL_LAST_FIRED_AT=")
 	}
 
-	result := runCommandWithEnv(cmd, env)
+	result := runInvocation(inv, env, 0)
 	if result.ExitCode != 0 {
 		log.Printf("schedule %s (%s): precondition returned exit %d, deferring fire",
 			sched.desired.ID, sched.desired.Name, result.ExitCode)
@@ -328,28 +388,37 @@ func (d *Daemon) resetPreconditionState(sched *activeSchedule) {
 	}
 }
 
-// runCommand executes a shell command via /bin/zsh and returns the result.
+// runCommand executes a shell-line command via /bin/zsh and returns the result.
 func runCommand(command string) ExecutionResult {
-	return runCommandWithEnv(command, nil)
+	return runInvocation(shellInvocation{Line: command}, nil, 0)
 }
 
-// runCommandWithEnv executes a shell command via /bin/zsh with optional extra
-// environment variables. If env is nil, the current process environment is used.
+// runCommandWithEnv executes a shell-line command via /bin/zsh with optional
+// extra environment variables. If env is nil, the current process environment is
+// used.
 func runCommandWithEnv(command string, env []string) ExecutionResult {
-	return runCommandWithTimeout(command, env, 0)
+	return runInvocation(shellInvocation{Line: command}, env, 0)
 }
 
-// runCommandWithTimeout executes a shell command via /bin/zsh, optionally with
-// extra environment variables and a wall-clock timeout. If env is nil, the
-// current process environment is used. If timeout <= 0, the command runs to
-// completion with no deadline (today's unbounded behavior).
+// runCommandWithTimeout executes a shell-line command via /bin/zsh, optionally
+// with extra environment variables and a wall-clock timeout. Thin wrapper over
+// runInvocation for the string form.
+func runCommandWithTimeout(command string, env []string, timeout time.Duration) ExecutionResult {
+	return runInvocation(shellInvocation{Line: command}, env, timeout)
+}
+
+// runInvocation executes a command (string OR argv-array form; see
+// shellInvocation and buildShellCommand) via the login shell /bin/zsh -l,
+// optionally with extra environment variables and a wall-clock timeout. If env
+// is nil, the current process environment is used. If timeout <= 0, the command
+// runs to completion with no deadline (today's unbounded behavior).
 //
 // When a timeout is set, the command is launched in its own process group
 // (Setpgid) so that on expiry we can SIGKILL the entire group (-pgid), not just
 // the /bin/zsh shell — otherwise a hung child (e.g. a network call spawned by
 // the script) would survive and the run would still be wedged. The returned
 // ExecutionResult has TimedOut=true and ExitCode=-1 when the deadline fired.
-func runCommandWithTimeout(command string, env []string, timeout time.Duration) ExecutionResult {
+func runInvocation(inv shellInvocation, env []string, timeout time.Duration) ExecutionResult {
 	ctx := context.Background()
 	if timeout > 0 {
 		var cancel context.CancelFunc
@@ -357,7 +426,8 @@ func runCommandWithTimeout(command string, env []string, timeout time.Duration) 
 		defer cancel()
 	}
 
-	cmd := exec.CommandContext(ctx, "/bin/zsh", "-l", "-c", command)
+	name, cmdArgs := buildShellCommand(inv)
+	cmd := exec.CommandContext(ctx, name, cmdArgs...)
 	if env != nil {
 		cmd.Env = env
 	}

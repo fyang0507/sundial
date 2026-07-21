@@ -66,9 +66,10 @@ func parsePollTrigger(cfg model.TriggerConfig) (*PollTrigger, error) {
 	}
 
 	t := &PollTrigger{
-		TriggerCommand: cfg.TriggerCommand,
-		Interval:       interval,
-		Timeout:        timeout,
+		TriggerCommand:     cfg.TriggerCommand,
+		TriggerCommandArgs: cfg.TriggerCommandArgs,
+		Interval:           interval,
+		Timeout:            timeout,
 	}
 	if err := t.Validate(); err != nil {
 		return nil, err

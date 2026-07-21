@@ -325,6 +325,12 @@ func TestValidateExecutionParams(t *testing.T) {
 		{"valid max-elapsed", model.AddParams{Precondition: "exit 0", PreconditionMaxElapsed: "6h"}, false},
 		{"bad max-elapsed", model.AddParams{Precondition: "exit 0", PreconditionMaxElapsed: "soon"}, true},
 		{"max-elapsed without precondition", model.AddParams{PreconditionMaxElapsed: "6h"}, true},
+		// Argv-array form of the command fields.
+		{"array precondition satisfies backoff requirement", model.AddParams{PreconditionArgs: []string{"/my check.sh"}, PreconditionBackoff: []string{"1m"}}, false},
+		{"array precondition satisfies max-elapsed requirement", model.AddParams{PreconditionArgs: []string{"/my check.sh"}, PreconditionMaxElapsed: "6h"}, false},
+		{"command and command_args mutually exclusive", model.AddParams{Command: "echo hi", CommandArgs: []string{"/a b.sh"}}, true},
+		{"precondition and precondition_args mutually exclusive", model.AddParams{Precondition: "exit 0", PreconditionArgs: []string{"/a b.sh"}}, true},
+		{"trigger_command and trigger_command_args mutually exclusive", model.AddParams{TriggerCommand: "exit 0", TriggerCommandArgs: []string{"/a b.sh"}}, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

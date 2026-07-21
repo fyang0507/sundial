@@ -112,6 +112,19 @@ func validateExecutionParams(p model.AddParams) *model.RPCError {
 		return &model.RPCError{Code: model.RPCErrCodeInvalidParams, Message: msg}
 	}
 
+	// The string and argv-array forms of each command field are mutually
+	// exclusive — supplying both is ambiguous. Reject it here so a direct RPC
+	// client gets the same rejection the CLI enforces.
+	if p.Command != "" && len(p.CommandArgs) > 0 {
+		return invalid("command and command_args are mutually exclusive: supply one form")
+	}
+	if p.Precondition != "" && len(p.PreconditionArgs) > 0 {
+		return invalid("precondition and precondition_args are mutually exclusive: supply one form")
+	}
+	if p.TriggerCommand != "" && len(p.TriggerCommandArgs) > 0 {
+		return invalid("trigger_command and trigger_command_args are mutually exclusive: supply one form")
+	}
+
 	if p.ExecTimeout != "" {
 		if p.Detach {
 			return invalid("--exec-timeout cannot be combined with --detach (a detached command's exit is never captured)")
@@ -121,7 +134,10 @@ func validateExecutionParams(p model.AddParams) *model.RPCError {
 		}
 	}
 
-	if len(p.PreconditionBackoff) > 0 && p.Precondition == "" {
+	// A precondition may be given in string OR argv-array form.
+	hasPrecondition := p.Precondition != "" || len(p.PreconditionArgs) > 0
+
+	if len(p.PreconditionBackoff) > 0 && !hasPrecondition {
 		return invalid("precondition_backoff requires a precondition")
 	}
 	for _, s := range p.PreconditionBackoff {
@@ -131,7 +147,7 @@ func validateExecutionParams(p model.AddParams) *model.RPCError {
 	}
 
 	if p.PreconditionMaxElapsed != "" {
-		if p.Precondition == "" {
+		if !hasPrecondition {
 			return invalid("precondition_max_elapsed requires a precondition")
 		}
 		if dur, err := time.ParseDuration(p.PreconditionMaxElapsed); err != nil || dur <= 0 {
@@ -146,15 +162,16 @@ func validateExecutionParams(p model.AddParams) *model.RPCError {
 func (d *Daemon) handleAdd(p model.AddParams) (*model.AddResult, *model.RPCError) {
 	// 1. Build TriggerConfig from params.
 	trigCfg := model.TriggerConfig{
-		Type:           p.Type,
-		Cron:           p.Cron,
-		Event:          p.Event,
-		Offset:         p.Offset,
-		Days:           p.Days,
-		TriggerCommand: p.TriggerCommand,
-		Interval:       p.Interval,
-		Timeout:        p.Timeout,
-		FireAt:         p.FireAt,
+		Type:               p.Type,
+		Cron:               p.Cron,
+		Event:              p.Event,
+		Offset:             p.Offset,
+		Days:               p.Days,
+		TriggerCommand:     p.TriggerCommand,
+		TriggerCommandArgs: p.TriggerCommandArgs,
+		Interval:           p.Interval,
+		Timeout:            p.Timeout,
+		FireAt:             p.FireAt,
 	}
 	if p.Lat != nil && p.Lon != nil {
 		tz := p.Timezone
@@ -215,7 +232,11 @@ func (d *Daemon) handleAdd(p model.AddParams) (*model.AddResult, *model.RPCError
 					Data:    data,
 				}
 			}
-			if sched.desired.Command == p.Command {
+			// Guard against the empty string matching empty: an array-form add
+			// carries an empty Command, which would otherwise "match" any other
+			// array-form schedule. Command-based dedup only applies to the string
+			// form; array-form schedules dedup by name.
+			if p.Command != "" && sched.desired.Command == p.Command {
 				d.mu.RUnlock()
 				dupInfo := &model.DuplicateInfo{
 					ExistingID:   sched.desired.ID,
@@ -267,8 +288,10 @@ func (d *Daemon) handleAdd(p model.AddParams) (*model.AddResult, *model.RPCError
 	if completed := d.findCompletedByName(p.Name); completed != nil {
 		return d.reactivateSchedule(completed, trigCfg, trig, p)
 	}
-	if completed := d.findCompletedByCommand(p.Command); completed != nil {
-		return d.reactivateSchedule(completed, trigCfg, trig, p)
+	if p.Command != "" {
+		if completed := d.findCompletedByCommand(p.Command); completed != nil {
+			return d.reactivateSchedule(completed, trigCfg, trig, p)
+		}
 	}
 
 	// 4. Check git preconditions.
@@ -290,12 +313,14 @@ func (d *Daemon) handleAdd(p model.AddParams) (*model.AddResult, *model.RPCError
 		UserRequest: p.UserRequest,
 		Trigger:     trigCfg,
 		Command:     p.Command,
+		CommandArgs: p.CommandArgs,
 		Status:      model.StatusActive,
 		Once:        p.Once,
 		Detach:      p.Detach,
 		ExecTimeout: p.ExecTimeout,
 
 		Precondition:           p.Precondition,
+		PreconditionArgs:       p.PreconditionArgs,
 		PreconditionBackoff:    p.PreconditionBackoff,
 		PreconditionMaxElapsed: p.PreconditionMaxElapsed,
 		IgnoreActiveHours:      p.IgnoreActiveHours,
@@ -638,6 +663,7 @@ func (d *Daemon) handleShow(p model.ShowParams) (*model.ShowResult, *model.RPCEr
 	result := &model.ShowResult{
 		ScheduleSummary:   summary,
 		Command:           sched.desired.Command,
+		CommandArgs:       sched.desired.CommandArgs,
 		UserRequest:       sched.desired.UserRequest,
 		CreatedAt:         sched.desired.CreatedAt.Format(time.RFC3339),
 		RecreationCommand: sched.desired.RecreationCommand,
@@ -645,6 +671,7 @@ func (d *Daemon) handleShow(p model.ShowParams) (*model.ShowResult, *model.RPCEr
 		// Schedule configuration (mirrors DesiredState; empty => default).
 		ExecTimeout:            sched.desired.ExecTimeout,
 		Precondition:           sched.desired.Precondition,
+		PreconditionArgs:       sched.desired.PreconditionArgs,
 		PreconditionBackoff:    sched.desired.PreconditionBackoff,
 		PreconditionMaxElapsed: sched.desired.PreconditionMaxElapsed,
 	}
@@ -891,6 +918,7 @@ func (d *Daemon) refreshActiveSchedule(
 	existing.desired.Detach = p.Detach
 	existing.desired.ExecTimeout = p.ExecTimeout
 	existing.desired.Precondition = p.Precondition
+	existing.desired.PreconditionArgs = p.PreconditionArgs
 	existing.desired.PreconditionBackoff = p.PreconditionBackoff
 	existing.desired.PreconditionMaxElapsed = p.PreconditionMaxElapsed
 	existing.desired.IgnoreActiveHours = p.IgnoreActiveHours
@@ -899,8 +927,15 @@ func (d *Daemon) refreshActiveSchedule(
 		existing.desired.CompletionReason = ""
 	}
 	existing.desired.CreatedAt = time.Now() // reset for poll timeout recalculation
-	if p.Command != "" {
+	// Update the command, preferring whichever form the caller supplied and
+	// clearing the other so a refresh can switch between string and array form.
+	// Supplying neither leaves the existing command untouched.
+	if len(p.CommandArgs) > 0 {
+		existing.desired.CommandArgs = p.CommandArgs
+		existing.desired.Command = ""
+	} else if p.Command != "" {
 		existing.desired.Command = p.Command
+		existing.desired.CommandArgs = nil
 	}
 	if p.Name != "" {
 		existing.desired.Name = p.Name
@@ -1027,6 +1062,7 @@ func (d *Daemon) reactivateSchedule(
 	completed.Detach = p.Detach
 	completed.ExecTimeout = p.ExecTimeout
 	completed.Precondition = p.Precondition
+	completed.PreconditionArgs = p.PreconditionArgs
 	completed.PreconditionBackoff = p.PreconditionBackoff
 	completed.PreconditionMaxElapsed = p.PreconditionMaxElapsed
 	completed.IgnoreActiveHours = p.IgnoreActiveHours
@@ -1034,8 +1070,14 @@ func (d *Daemon) reactivateSchedule(
 		completed.Name = p.Name
 		name = p.Name
 	}
-	if p.Command != "" && p.Command != completed.Command {
+	// Update the command, preferring the array form when supplied and clearing
+	// the other form so reactivation can switch string<->array.
+	if len(p.CommandArgs) > 0 {
+		completed.CommandArgs = p.CommandArgs
+		completed.Command = ""
+	} else if p.Command != "" && p.Command != completed.Command {
 		completed.Command = p.Command
+		completed.CommandArgs = nil
 	}
 	if p.UserRequest != "" {
 		completed.UserRequest = p.UserRequest

@@ -60,6 +60,25 @@ If a scheduled command itself calls back into sundial — e.g. a poll callback t
 
 Use `--detach` only when the callback logs its outcome elsewhere or re-enters sundial. For any command whose exit code you want recorded, let it run attached.
 
+## Command forms: shell line vs. argv array (paths with spaces)
+
+`--command` (and `--trigger` and `--precondition`) is a **shell command LINE**: the daemon runs it verbatim through `zsh -l -c <line>`. That gives you pipes, redirection, globs, and `$VAR` expansion — but it also means a **bare filesystem path containing a space word-splits and dies with a silent `exit 127`** (e.g. `.../My Drive/.../script.zsh` becomes two tokens). This is the trap behind a script that "never runs" with no useful log.
+
+For a path (or any argument) with spaces, use the **argv-array form** instead — a repeatable flag, one value per argument:
+
+```bash
+sundial add cron --cron "0 9 * * *" \
+  --command-arg "/Users/you/My Drive/scripts/backup.zsh" \
+  --command-arg "--target" --command-arg "value with space"
+```
+
+Each `--command-arg` value becomes a distinct argv word, so spaces never split and **no shell quoting is stored** in the schedule JSON (it persists as a `command_args` array). The array is executed as `zsh -l -c 'exec "$@"' zsh <args…>` — still a **login shell**, so `PATH` is rebuilt from your profile and user tools (`uv`, `codex`, homebrew, `~/.local/bin`) resolve exactly as with the string form. The array form does **not** interpret pipes/globs/redirection — it runs the program directly, so use the string form when you actually want shell features.
+
+- Sibling flags for the other command fields: `--precondition-arg` (repeatable) and, for poll, `--trigger-arg` (repeatable).
+- The string and array forms of a field are **mutually exclusive** — pass one or the other, not both.
+- `sundial show` renders an array-form command as a bracketed, quoted list tagged `(argv array)`; JSON exposes `command_args` / `precondition_args` / `trigger_command_args`.
+- Rule of thumb: **shell features → string form; a path/argument with spaces → array form.**
+
 ## Capping a command's runtime (`--exec-timeout`)
 
 `--exec-timeout <duration>` (e.g. `30m`, `90s`) bounds the wall-clock runtime of an attached command. It is **opt-in**: with no flag the daemon waits indefinitely (the default). Use it for commands that can hang — a network fetch, an agent session, anything that might never return — so one stuck run can't hold the per-schedule mutex forever and stall the next fire.
