@@ -159,7 +159,13 @@ func FormatShowResult(r *model.ShowResult, jsonMode bool) string {
 	}
 
 	kv(&b, "status", r.Status)
-	kv(&b, "command", r.Command)
+	if len(r.CommandArgs) > 0 {
+		// Argv-array form: show as a bracketed list so it's unambiguous that each
+		// entry is a distinct argument (no shell re-parsing).
+		kv(&b, "command", formatArgv(r.CommandArgs))
+	} else {
+		kv(&b, "command", r.Command)
+	}
 
 	// Schedule configuration: only emit lines for options the operator actually
 	// set, so a plain schedule stays terse. Backoff/max_elapsed are per-schedule
@@ -168,8 +174,12 @@ func FormatShowResult(r *model.ShowResult, jsonMode bool) string {
 	if r.ExecTimeout != "" {
 		kv(&b, "exec_timeout", r.ExecTimeout)
 	}
-	if r.Precondition != "" {
-		kv(&b, "precondition", r.Precondition)
+	if r.Precondition != "" || len(r.PreconditionArgs) > 0 {
+		if len(r.PreconditionArgs) > 0 {
+			kv(&b, "precondition", formatArgv(r.PreconditionArgs))
+		} else {
+			kv(&b, "precondition", r.Precondition)
+		}
 		if len(r.PreconditionBackoff) > 0 {
 			kv(&b, "precondition_backoff", strings.Join(r.PreconditionBackoff, ", "))
 		}
@@ -497,6 +507,17 @@ func kv(b *strings.Builder, key, value string) {
 	b.WriteString(": ")
 	b.WriteString(value)
 	b.WriteByte('\n')
+}
+
+// formatArgv renders an argv-array command for human display, quoting each
+// entry so arguments containing spaces are visually distinct. This is display
+// only — the daemon runs the array without any shell re-parsing.
+func formatArgv(args []string) string {
+	quoted := make([]string, len(args))
+	for i, a := range args {
+		quoted[i] = fmt.Sprintf("%q", a)
+	}
+	return "[" + strings.Join(quoted, " ") + "] (argv array)"
 }
 
 // truncate shortens s to maxLen characters, appending "..." if truncated.

@@ -43,12 +43,22 @@ const (
 // DesiredState is the canonical schedule definition stored in the data repo.
 // One JSON file per schedule at <data_repo>/sundial/schedules/sch_<id>.json.
 type DesiredState struct {
-	ID                string           `json:"id"`
-	Name              string           `json:"name"`
-	CreatedAt         time.Time        `json:"created_at"`
-	UserRequest       string           `json:"user_request,omitempty"`
-	Trigger           TriggerConfig    `json:"trigger"`
-	Command           string           `json:"command"`
+	ID          string        `json:"id"`
+	Name        string        `json:"name"`
+	CreatedAt   time.Time     `json:"created_at"`
+	UserRequest string        `json:"user_request,omitempty"`
+	Trigger     TriggerConfig `json:"trigger"`
+	Command     string        `json:"command"`
+	// CommandArgs is the OPTIONAL argv-array form of Command. When non-empty it
+	// takes precedence over Command: the daemon runs it through a login shell
+	// WITHOUT re-parsing (zsh -l -c 'exec "$@"' zsh <args...>), so each entry is a
+	// distinct argv word. Use it when an argument (typically a script path) contains
+	// spaces or shell metacharacters that would otherwise word-split or be
+	// interpreted — no shell quoting ever needs to live in stored data. Command (the
+	// string form) remains a shell command LINE, for pipes/redirection/globs.
+	// Exactly one form is populated per schedule; both are run under the login shell
+	// so user-profile PATH resolution is preserved either way.
+	CommandArgs       []string         `json:"command_args,omitempty"`
 	Status            ScheduleStatus   `json:"status"`
 	CompletionReason  CompletionReason `json:"completion_reason,omitempty"` // set when status=completed
 	RecreationCommand string           `json:"recreation_command,omitempty"`
@@ -68,6 +78,11 @@ type DesiredState struct {
 	// interval), a precondition layers on top of any trigger and retries with
 	// growing backoff until it passes or the give-up deadline is reached.
 	Precondition string `json:"precondition,omitempty"`
+	// PreconditionArgs is the OPTIONAL argv-array form of Precondition, with the
+	// same semantics as CommandArgs: when non-empty it takes precedence over
+	// Precondition and is executed via the login shell without re-parsing. Use it
+	// for a readiness-check script whose path contains spaces.
+	PreconditionArgs []string `json:"precondition_args,omitempty"`
 	// PreconditionBackoff overrides the daemon's default backoff schedule for this
 	// schedule (Go durations, e.g. ["1m","5m","30m","1h","2h"]). The Nth deferral
 	// waits backoff[min(N, len-1)] — the last entry repeats as the cap. Empty =>

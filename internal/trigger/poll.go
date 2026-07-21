@@ -18,8 +18,12 @@ const minPollInterval = 30 * time.Second
 // the schedule, regardless of the trigger check result.
 type PollTrigger struct {
 	TriggerCommand string
-	Interval       time.Duration
-	Timeout        time.Duration
+	// TriggerCommandArgs is the argv-array form of the check command. Exactly one
+	// of TriggerCommand or TriggerCommandArgs is populated. Validation and the
+	// daemon treat either as a valid check command.
+	TriggerCommandArgs []string
+	Interval           time.Duration
+	Timeout            time.Duration
 }
 
 // NextFireTime returns after + Interval.
@@ -30,8 +34,11 @@ func (p *PollTrigger) NextFireTime(after time.Time) time.Time {
 // Validate checks that the trigger command is non-empty, the interval is
 // at least minPollInterval, timeout is positive, and timeout >= interval.
 func (p *PollTrigger) Validate() error {
-	if p.TriggerCommand == "" {
-		return fmt.Errorf("poll trigger: trigger_command is required")
+	if p.TriggerCommand == "" && len(p.TriggerCommandArgs) == 0 {
+		return fmt.Errorf("poll trigger: trigger_command (or trigger_command_args) is required")
+	}
+	if p.TriggerCommand != "" && len(p.TriggerCommandArgs) > 0 {
+		return fmt.Errorf("poll trigger: trigger_command and trigger_command_args are mutually exclusive")
 	}
 	if p.Interval < minPollInterval {
 		return fmt.Errorf("poll trigger: interval must be at least %s, got %s", minPollInterval, p.Interval)
