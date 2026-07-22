@@ -20,9 +20,9 @@ const (
 )
 
 // ReadDataRepoPath strictly decodes the single config file at path and returns
-// its data_repo_path (tilde-expanded). Exposed so external tooling (the
-// Makefile shim) can share the parser and read the same data_repo_path the
-// daemon would.
+// its data_repo_path (tilde-expanded and config-relative). Exposed so external
+// tooling (the Makefile shim) can share the parser and read the same
+// data_repo_path the daemon would.
 func ReadDataRepoPath(path string) (string, error) {
 	cfg, err := decodeConfigFile(path)
 	if err != nil {
@@ -31,7 +31,7 @@ func ReadDataRepoPath(path string) (string, error) {
 	if cfg.DataRepo == "" {
 		return "", errors.New(path + ": missing or has no data_repo_path")
 	}
-	return ExpandPath(cfg.DataRepo), nil
+	return resolveConfigRelativePath(path, cfg.DataRepo), nil
 }
 
 // IsResolveError reports whether err is a config/data-repo resolution failure.

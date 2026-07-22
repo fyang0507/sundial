@@ -145,6 +145,32 @@ func TestLoadConfigFile_MinimalConfig_DefaultsApplied(t *testing.T) {
 	}
 }
 
+func TestRelativeDataRepoPathIsConfigRelative(t *testing.T) {
+	tmp := t.TempDir()
+	configDir := filepath.Join(tmp, "sundial")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("creating config directory: %v", err)
+	}
+	cfgPath := writeConfig(t, configDir, "data_repo_path: ../fred-agent\n")
+	want := filepath.Join(tmp, "fred-agent")
+
+	cfg, err := LoadConfigFile(cfgPath, "")
+	if err != nil {
+		t.Fatalf("LoadConfigFile() error: %v", err)
+	}
+	if cfg.DataRepo != want {
+		t.Errorf("DataRepo = %q, want %q", cfg.DataRepo, want)
+	}
+
+	got, err := ReadDataRepoPath(cfgPath)
+	if err != nil {
+		t.Fatalf("ReadDataRepoPath() error: %v", err)
+	}
+	if got != want {
+		t.Errorf("ReadDataRepoPath() = %q, want %q", got, want)
+	}
+}
+
 func TestLoadConfigFile_DataRepoOverride(t *testing.T) {
 	tmp := t.TempDir()
 	cfgPath := writeConfig(t, tmp, "data_repo_path: /from/file\n")

@@ -23,7 +23,7 @@ Sundial reads a single config file, `sundial.config.yaml`, that lives in the **s
 3. `./sundial.config.yaml` in the current directory
 4. `sundial.config.yaml` next to the running binary
 
-`data_repo_path` from that file points at the shared **data repo** — the same git repo used by other agent tooling, holding only schedules, `.agents/workspace.yaml`, and agent skill symlinks. Override the path with the `SUNDIAL_DATA_REPO` environment variable or the `--data-repo` flag.
+`data_repo_path` from that file points at the shared **data repo** — the same git repo used by other agent tooling, holding only schedules, `.agents/workspace.yaml`, and agent skill symlinks. Relative values are resolved from the config file, so sibling checkouts can use `../fred-agent` and remain portable across Drive mount points. Override the path with the `SUNDIAL_DATA_REPO` environment variable or the `--data-repo` flag.
 
 ## Scaffolding a new data repo
 

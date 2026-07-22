@@ -37,9 +37,9 @@ func decodeConfigFile(path string) (*model.Config, error) {
 
 // LoadConfigFile reads the single config file at configPath, strictly decodes
 // it into a model.Config, applies defaults for zero-value fields, and expands
-// ~ in all path fields. data_repo_path comes from the file; if dataRepoOverride
-// is non-empty it overrides the on-disk data_repo_path. The resolved absolute
-// config path is recorded on Config.ConfigPath.
+// ~ in all path fields. A relative data_repo_path is resolved from the config
+// file's directory. If dataRepoOverride is non-empty it overrides the on-disk
+// data_repo_path. The resolved absolute config path is recorded on Config.ConfigPath.
 func LoadConfigFile(configPath, dataRepoOverride string) (*model.Config, error) {
 	cfg, err := decodeConfigFile(configPath)
 	if err != nil {
@@ -57,6 +57,9 @@ func LoadConfigFile(configPath, dataRepoOverride string) (*model.Config, error) 
 	}
 
 	applyDefaults(cfg)
+	if dataRepoOverride == "" {
+		cfg.DataRepo = resolveConfigRelativePath(cfg.ConfigPath, cfg.DataRepo)
+	}
 	expandPaths(cfg)
 	return cfg, nil
 }
@@ -183,6 +186,20 @@ func ExpandPath(p string) string {
 		return filepath.Join(home, p[1:])
 	}
 	return p
+}
+
+// resolveConfigRelativePath expands ~, then anchors a relative value at the
+// config file's directory so the config remains portable across mount points.
+func resolveConfigRelativePath(configPath, p string) string {
+	expanded := ExpandPath(p)
+	if expanded == "" || filepath.IsAbs(expanded) {
+		return expanded
+	}
+	configAbs, err := filepath.Abs(configPath)
+	if err != nil {
+		return expanded
+	}
+	return filepath.Clean(filepath.Join(filepath.Dir(configAbs), expanded))
 }
 
 // Validate checks that cfg satisfies all invariants:

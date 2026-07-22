@@ -12,12 +12,12 @@
 #   3. ./sundial.config.yaml in the working directory
 #   4. sundial.config.yaml next to the running binary
 #
-# data_repo_path is REQUIRED. Everything under daemon: and state: has sensible
-# defaults and may be omitted. Unknown / misspelled keys are a hard error
-# (strict decoding), so a typo like `daemon.wake.enabledd` fails loudly.
+# data_repo_path is REQUIRED. Relative paths resolve from this config file, so
+# sibling checkouts can use ../fred-agent. Everything under daemon: and state:
+# has sensible defaults and may be omitted. Unknown / misspelled keys are a
+# hard error (strict decoding), so a typo like `daemon.wake.enabledd` fails loudly.
 
-data_repo_path: "~/path/to/your/data-repo"   # REQUIRED — path to the portable data repo
-                                             # (overridable via --data-repo / SUNDIAL_DATA_REPO)
+data_repo_path: ../your-data-repo             # REQUIRED — path to the portable data repo
 
 # daemon:
 #   log_level: info                      # debug | info | warn | error
