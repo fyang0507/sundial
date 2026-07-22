@@ -11,9 +11,9 @@ var jsonOutput bool
 
 var rootCmd = &cobra.Command{
 	Use:   "sundial",
-	Short: "Agent-first CLI scheduler with cron and solar triggers",
-	Long: `Sundial is a lightweight, agent-first CLI scheduler that supports both
-static (cron) and dynamic (solar) schedules on macOS.
+	Short: "Agent-native CLI scheduler with cron, solar, poll, and at triggers",
+	Long: `Sundial is a lightweight, agent-native CLI scheduler for macOS.
+It supports cron, solar, poll, and one-off at triggers.
 
 Schedules are managed by a background daemon (launchd) and persisted
 to a data repo for portability.`,
