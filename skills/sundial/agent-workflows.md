@@ -17,18 +17,17 @@ These are **third-party agent-CLI flags, not sundial flags** — sundial can't v
 
 The headless invocations, with the preferred flags:
 
-**Codex** (default for scheduled runs; log plain output locally):
+**Codex** (GPT-6 Astra example; choose the model and effort for the task as described below; log plain output locally):
 ```bash
 codex exec \
   --cd /path/to/workspace \
-  --model <chosen-model> \
+  --model gpt-6-astra \
   -c model_reasoning_effort="low" \
   --dangerously-bypass-approvals-and-sandbox \
   "Launched by the sundial scheduler — this is the scheduled fire. Run <skill-name> now; execute directly, don't reschedule." >>/path/to/local/run.log 2>&1
 
-codex exec resume <thread_id> \
-  --cd /path/to/workspace \
-  --model <chosen-model> \
+codex exec --cd /path/to/workspace resume <thread_id> \
+  --model gpt-6-astra \
   -c model_reasoning_effort="low" \
   --dangerously-bypass-approvals-and-sandbox \
   "The sundial scheduler resumed this session at the scheduled time — continue where we left off and finish the task now." >>/path/to/local/run.log 2>&1
@@ -43,22 +42,26 @@ a new thread id.
 
 **Claude Code** (single JSON envelope; `session_id` field):
 ```bash
-claude --dangerously-skip-permissions -p "<prompt>" --output-format json                          # new
-claude --resume <session_id> --dangerously-skip-permissions -p "<prompt>" --output-format json    # resume
+claude --model claude-sonnet-5 --effort low --dangerously-skip-permissions -p "<prompt>" --output-format json                       # new
+claude --resume <session_id> --model claude-sonnet-5 --effort low --dangerously-skip-permissions -p "<prompt>" --output-format json   # resume
 ```
 
 Drop either command into a `sundial add ... --command '<agent command>'` and you've scheduled your future self.
 
 ## Choose the model and reasoning level deliberately
 
-A scheduled agent runs **unattended and often on a recurring cadence**, so its cost compounds silently with every fire — and there's no human watching to notice an overpowered model burning tokens on a trivial chore. Do not default to the most capable model at the highest reasoning level just because that's the interactive default. Instead, pick the **most economic model that can actually do the task**, and set its **reasoning/effort level explicitly** to match — never by omission. Both choices are part of writing the `--command`; reason about them the same way you'd reason about the prompt.
+A scheduled agent runs **unattended and often on a recurring cadence**, so its cost compounds with every fire. Pick the **most economic available model that can do the task**, and set an explicit reasoning/effort level when that model supports the control. Choose these settings while writing the `--command`, rather than inheriting an interactive default.
 
-Two levers, set them both:
+Choose both deliberately, checking provider availability and the installed CLI before saving the command:
 
-- **Model** — both CLIs take `--model`. Start from the cheap end and only move up if the task genuinely needs it: for Claude Code, `--model claude-haiku-4-5` (or `haiku`) for routine, well-specified chores; `claude-sonnet-4-6` (`sonnet`) for moderate work; reserve `claude-opus-4-8` (`opus`) for genuinely hard reasoning or long-horizon autonomy. Codex takes `--model` the same way.
-- **Reasoning / effort** — match thinking depth to the task instead of inheriting the default (`high`). Claude Code: `--effort low|medium|high|xhigh|max` — use `low` or `medium` for mechanical or narrowly-scoped chores and raise it only when the work needs deeper reasoning. Codex: `-c model_reasoning_effort="low"` (`minimal`|`low`|`medium`|`high`).
+- **Codex model** — `--model gpt-6-astra` selects GPT-6 Astra for complex work. For routine chores, choose a cheaper available model that meets the task's checks; the current-generation example above is not a requirement to use Astra for every schedule.
+- **Claude model** — use full IDs to pin a version: `claude-haiku-4-5-20251001` for simple chores, `claude-sonnet-5` for moderate work, or `claude-opus-5` for harder reasoning. The moving aliases `haiku`, `sonnet`, and `opus` follow provider-specific recommendations and may be overridden by configuration; do not equate them with fixed IDs. On the Anthropic API, Sonnet 5 requires Claude Code 2.1.197+ and Opus 5 requires 2.1.219+.
+- **Codex effort** — use `-c model_reasoning_effort="low"` or another level advertised for the selected model by the installed app server's read-only `model/list` (`supportedReasoningEfforts`). GPT-6 Astra supports `low`, `medium`, `high`, `xhigh`, `max`, and `ultra` in the verified Codex CLI; do not select `none` or `minimal` for it. Start with the lowest effort that passes the task's checks and recheck support when the model or CLI changes.
+- **Claude effort** — for Sonnet 5 and Opus 5, choose a supported `--effort` from `low`, `medium`, `high`, `xhigh`, or `max`. Haiku 4.5 has no effort control, so omit `--effort` for it. Other models may support fewer levels; the CLI's general help list is not a per-model capability list.
 
-When you resume a session, the model and effort are per-invocation flags on the resuming command, not inherited from the original session — restate them on every scheduled `--command`.
+Restate the chosen model and any supported effort on every scheduled resume command so the intended settings are explicit. Resume behavior depends on the runtime: Claude can restore the session's saved model, subject to configuration precedence; do not assume that starting a resumed session clears its prior settings.
+
+Examples checked on 2026-09-14 with Codex 0.153.2 and Claude Code 2.1.251. Recheck [OpenAI model guidance](https://developers.openai.com/api/docs/guides/latest-model), [Codex models](https://learn.chatgpt.com/docs/models), [Codex model discovery](https://learn.chatgpt.com/docs/app-server#list-models-modellist), and [Claude model configuration](https://code.claude.com/docs/en/model-config) when updating them. Provider documentation and CLI capabilities do not by themselves prove account access or task quality.
 
 ## Make the prompt say "you are the scheduled fire — execute now"
 
